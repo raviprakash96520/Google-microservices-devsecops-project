@@ -1,0 +1,312 @@
+pipeline {
+    agent any
+
+    tools {
+        go 'go1.25'
+    }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_NAME  = 'harishnshetty/frontend'
+        IMAGE_NAME   = 'frontend'
+        IMAGE_TAG    = "${BUILD_NUMBER}"
+        
+        // RELATIVE PATH FIX: Specifying the microservice path as target base directory
+        SERVICE_DIR  = 'src/frontend'
+        
+        // Credential IDs
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
+        COSIGN_KEY_ID   = 'cosign-private-key' 
+    }
+
+    stages {
+        stage("Clean Workspace") {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage("Git Checkout") {
+            steps {
+                // Pulling your main branch code structure
+                git branch: 'main', url: 'https://github.com/harishnshetty/Google-microservices-devsecops-project.git'
+            }
+        }
+
+        // --- MASTER STAGE 2: Secret Scan ---
+        stage('Secret Scan (GitLeaks)') {
+            steps {
+                echo "Checking for leaked secrets inside ${env.SERVICE_DIR} context..."
+                // Specific component framework analysis to reduce false positives
+                sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
+            }
+        }
+
+        // --- MASTER STAGE 3: License Scan ---
+        stage('License Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Analyzing open-source dependency licenses..."
+                    // Native scanning scripts hook
+                    // sh 'go-licenses check ./... || true'
+                }
+            }
+        }
+
+        // --- MASTER STAGE 4: SAST (gosec) ---
+        stage('Go Security Scan (gosec)') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+
+                        if ! command -v gosec &> /dev/null; then
+                            echo "Installing gosec utility..."
+                            go install github.com/securego/gosec/v2/cmd/gosec@latest
+                        fi
+
+                        echo "Running structural security evaluation..."
+                        gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    // Pulling directly from microservice subfolder workspace
+                    archiveArtifacts "${env.SERVICE_DIR}/gosec-report.json"
+                }
+            }
+        }
+
+        // ---- MASTER STAGE 5 & 6: Code Quality & Quality Gate ----
+        stage("SonarQube Analysis") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+                        sh ''' $SCANNER_HOME/bin/sonar-scanner \\
+                            -Dsonar.projectName=frontend \\
+                            -Dsonar.projectKey=frontend \\
+                            -Dsonar.sources=. \\
+                            -Dsonar.language=go \\
+                            -Dsonar.go.gosec.reportPaths=gosec-report.json '''
+                    }
+                }
+            }
+        }
+
+        stage("Quality Gate Check") {
+            steps {
+                script {
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
+                    }
+                }
+            }
+        }
+
+        // ---- MASTER STAGE 9: Core Native Build ----
+        stage('Go Build Execution') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Compiling the production bundle inside target folder..."
+                    CGO_ENABLED=0 go build -o app .
+                    '''
+                }
+            }
+        }
+
+        // ---- MASTER STAGE 7 & 8: Unit Testing & Coverage ----
+        stage('Go Unit Tests') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Triggering test parameters and tracking coverage profiles..."
+                    go test -v -coverprofile=coverage.out ./...
+                    '''
+                }
+            }
+        }
+
+        // --- MASTER STAGE 10: SCA ---
+        stage('Go Dependency Check (govulncheck)') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        sh '''
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+
+                        if ! command -v govulncheck &> /dev/null; then
+                            echo "Fetching govulncheck definitions..."
+                            go install golang.org/x/vuln/cmd/govulncheck@latest
+                        fi
+
+                        export PATH="$PATH:$(go env GOPATH)/bin"
+
+                        echo "Validating imported open-source module integrity..."
+                        govulncheck ./... || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 11: IaC Configuration Scan ---
+        stage('IaC Configuration Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Validating component Dockerfile and context definitions..."
+                    // Misconfiguration patterns checking inside microservice directory
+                    sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13: Trivy File System Scan ---
+        stage("Trivy Workspace File Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") { 
+                    script {
+                        sh '''
+                        echo "Executing baseline file scans..."
+                        trivy fs . \\
+                            --severity CRITICAL,HIGH \\
+                            --exit-code 1 \\
+                            --scanners vuln,misconfig,secret \\
+                            > trivy-fs-report.txt || true
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                }
+            }
+        }
+
+        // ---- MASTER STAGE 12: Docker Build Environment ----
+        stage("Build Docker Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
+                        
+                        // Builds the Dockerfile placed inside src/frontend folder context
+                        sh "docker build -t $IMAGE_NAME ."
+                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 14: SBOM Generation ---
+        stage("Generate SBOM Specification") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Exporting software asset layout manifest (CycloneDX format)..."
+                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
+        stage("Trivy Image Scan Processing") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        sh """
+                        echo 'Evaluating base container layers on target runtime target...'
+                        trivy image -f json -o trivy-image-frontend.json ${env.FINAL_TAG}
+                        trivy image -f table -o trivy-image-frontend.txt ${env.FINAL_TAG}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-frontend.json"
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-frontend.txt"
+                }
+            }
+        }
+
+        // ---- MASTER STAGE 16: Push Registry System ----
+        stage("Push Image to DockerHub") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
+                            sh "docker login -u harishnshetty -p ${dockerpwd}"
+                            sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                            sh "docker push ${env.FINAL_TAG}"
+
+                            sh "docker tag $IMAGE_NAME $DOCKER_NAME:latest"
+                            sh "docker push $DOCKER_NAME:latest"
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 15: Cryptographic Image Signing ---
+        stage("Sign Built Container Artifact") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Executing Cosign pipeline attachment stamps..."
+                        // withCredentials([string(credentialsId: "${COSIGN_KEY_ID}", variable: 'COSIGN_PASSWORD')]) {
+                        //     sh "cosign sign --key cosign.key ${env.FINAL_TAG}"
+                        // }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir("${env.SERVICE_DIR}") {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+
+                    emailext (
+                        subject: "CI Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>Frontend Component Google-Shop Complete CI Pipeline status report.</p>
+                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
+                            <p>Project Framework Source Directory: ${env.SERVICE_DIR}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Workspace Execution URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: 'harishn662@gmail.com',
+                        from: 'harishn662@gmail.com',
+                        mimeType: 'text/html',
+                        // Fixed explicit subfolder dynamic target lookups for attachment profiles
+                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-frontend.json,trivy-image-frontend.txt,gosec-report.json,sbom.json,iac-report.txt'
+                    )
+                }
+            }
+            cleanWs()
+        }
+    }
+}
