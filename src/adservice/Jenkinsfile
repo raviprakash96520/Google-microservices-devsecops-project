@@ -53,50 +53,18 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (Java SonarQube) ---
         stage('Java Compile & Build') {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    chmod +x gradlew
-                    ./gradlew build -x test
-                    '''
-                }
-            }
+    steps {
+        dir("${env.SERVICE_DIR}") {
+            sh '''
+            chmod +x gradlew
+            ./gradlew build -x test
+            '''
         }
+    }
+}
 
-
-        stage("SonarQube Analysis & SAST") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    withSonarQubeEnv('sonar-server') {
-
-                        sh '''
-                        $SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectName=adservice \
-                        -Dsonar.projectKey=adservice \
-                        -Dsonar.sources=src/main/java \
-                        -Dsonar.java.binaries=build/classes/java/main
-                        '''
-                    }
-                }
-            }
-        }
-
-        // --- MASTER STAGE 9: Core Compilation / Build ---
-        stage('Java Compile & Build') {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    echo "Compiling Java bundles using Gradle wrapper..."
-                    chmod +x gradlew
-                    ./gradlew build -x test
-                    '''
-                }
-            }
-        }
-
-        // --- MASTER STAGE 7 & 8: Unit Tests & Code Coverage ---
+ // --- MASTER STAGE 7 & 8: Unit Tests & Code Coverage ---
         stage('Java Unit Testing') {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -104,6 +72,38 @@ pipeline {
                 }
             }
         }
+
+        // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (Java SonarQube) ---
+        stage("SonarQube Analysis & SAST") {
+    steps {
+        dir("${env.SERVICE_DIR}") {
+            withSonarQubeEnv('sonar-server') {
+
+                sh '''
+                $SCANNER_HOME/bin/sonar-scanner \
+                -Dsonar.projectName=adservice \
+                -Dsonar.projectKey=adservice \
+                -Dsonar.sources=src/main/java \
+                -Dsonar.java.binaries=build/classes/java/main
+                '''
+            }
+        }
+    }
+}
+
+        stage("Quality Gate Check") {
+            steps {
+                script {
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
+                    }
+                }
+            }
+        }
+
+    
+
+       
 
         // --- MASTER STAGE 11: IaC Configuration Scan ---
         stage('IaC Configuration Scan') {
