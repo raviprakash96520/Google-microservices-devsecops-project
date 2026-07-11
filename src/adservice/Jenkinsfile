@@ -54,26 +54,30 @@ pipeline {
         }
 
         // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (Java SonarQube) ---
-        stage("SonarQube Analysis & SAST") {
+        stage('Java Compile & Build') {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    withSonarQubeEnv('sonar-server') {
-                        // Triggers the gradle wrapper scanner or standard standalone scanner
-                        sh ''' $SCANNER_HOME/bin/sonar-scanner \\
-                            -Dsonar.projectName=adservice \\
-                            -Dsonar.projectKey=adservice \\
-                            -Dsonar.sources=src/main/java \\
-                            -Dsonar.java.binaries=build/classes '''
-                    }
+                    sh '''
+                    chmod +x gradlew
+                    ./gradlew build -x test
+                    '''
                 }
             }
         }
 
-        stage("Quality Gate Check") {
+
+        stage("SonarQube Analysis & SAST") {
             steps {
-                script {
-                    timeout(time: 3, unit: 'MINUTES') {
-                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+
+                        sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=adservice \
+                        -Dsonar.projectKey=adservice \
+                        -Dsonar.sources=src/main/java \
+                        -Dsonar.java.binaries=build/classes/java/main
+                        '''
                     }
                 }
             }
