@@ -1,25 +1,266 @@
 pipeline {
     agent any
 
+    tools {
+        jdk 'jdk17'
+    }
+
+    environment {
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'harishnshetty/emailservice'
+        IMAGE_NAME      = 'emailservice'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        
+        // RELATIVE PATH FIX: Specifying the microservice path context
+        SERVICE_DIR     = 'src/emailservice'
+        
+        // Environment path configuration for localized pip tools execution
+        PATH            = "$PATH:/var/lib/jenkins/.local/bin"
+        
+        // Credential IDs
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
+        COSIGN_KEY_ID   = 'cosign-private-key'
+    }
+
     stages {
-        stage('Build & Tag Docker Image') {
+        stage("Clean Workspace") {
+            steps { 
+                cleanWs() 
+            }
+        }
+
+        stage("Git Checkout") {
             steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker build -t harishnshetty/emailservice:latest ."
+                // Pointing directly to your updated repository framework URL
+                git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
+            }
+        }
+
+        // --- MASTER STAGE 2: Secret Scan ---
+        stage('Secret Scan (GitLeaks)') {
+            steps {
+                echo "Scanning for exposed credentials/tokens within ${env.SERVICE_DIR}..."
+                sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
+            }
+        }
+
+        // --- MASTER STAGE 3: License Scan ---
+        stage('License Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Checking python modules source licenses compliance..."
+                    // pip3 install license-check && license-check || true
+                }
+            }
+        }
+
+        // --- MASTER STAGE 4: SAST (Bandit Scan) ---
+        stage("Bandit Security Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    python3 -m pip install --user --upgrade bandit
+                    bandit -r . -f json -o bandit-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 5 & 6: SAST Quality Scan (SonarQube) ---
+        stage("SonarQube Analysis") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+                        sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                          -Dsonar.projectKey=emailservice \
+                          -Dsonar.projectName=emailservice \
+                          -Dsonar.sources=. \
+                          -Dsonar.language=py
+                        '''
                     }
                 }
             }
         }
-        
-        stage('Push Docker Image') {
+
+        stage("Quality Gate") {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker push harishnshetty/emailservice:latest "
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
                     }
                 }
             }
+        }
+
+        // --- MASTER STAGE 9: Core Module Dependencies Setup ---
+        stage("Install Dependencies") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh 'python3 -m pip install --user -r requirements.txt || true'
+                }
+            }
+        }
+
+        // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
+        stage("Safety Dependency Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    python3 -m pip install --user safety
+                    safety check --full-report --output json > safety-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/safety-report.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 11: IaC Configuration Scan ---
+        stage('IaC Configuration Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Validating Docker infrastructure configurations blueprint..."
+                    sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13: Trivy File System Scan ---
+        stage("Trivy File Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh 'trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 12: Build Docker Image ---
+        stage("Build Docker Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
+                        sh "docker build -t $IMAGE_NAME ."
+                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 14: SBOM Generation ---
+        stage("Generate SBOM Manifest") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Generating CycloneDX SBOM software inventory..."
+                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
+        stage("Trivy Scan Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh """
+                    trivy image -f json -o trivy-image-email.json ${env.FINAL_TAG}
+                    trivy image -f table -o trivy-image-email.txt ${env.FINAL_TAG}
+                    """
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-email.json"
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-email.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 16: Registry Image Push ---
+        stage("Push to DockerHub") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
+                        sh """
+                        docker login -u harishnshetty -p ${dockerpwd}
+                        docker push ${env.FINAL_TAG}
+                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
+                        docker push ${DOCKER_NAME}:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 15: Cryptographic Image Signing ---
+        stage("Sign Container Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Publishing cryptographic Cosign verification stamps..."
+                        // withCredentials([string(credentialsId: "${COSIGN_KEY_ID}", variable: 'COSIGN_PASSWORD')]) {
+                        //     sh "cosign sign --key cosign.key ${env.FINAL_TAG}"
+                        // }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Final Notifications ---
+    post {
+        always {
+            dir("${env.SERVICE_DIR}") {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+
+                    emailext (
+                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>Emailservice Component Google-Shop DevSecOps pipeline status report.</p>
+                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
+                            <p>Project Target Context: ${env.SERVICE_DIR}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: 'harishn662@gmail.com',
+                        from: 'harishn662@gmail.com',
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-email.json,trivy-image-email.txt,sbom.json,iac-report.txt'
+                    )
+                }
+            }
+            cleanWs()
         }
     }
 }

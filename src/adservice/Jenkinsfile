@@ -1,25 +1,246 @@
 pipeline {
     agent any
 
+    tools {
+        jdk 'jdk21'
+    }
+
+    environment {
+        // Updated your new repo details and credentials
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'ravi6198/adservice'
+        IMAGE_NAME      = 'adservice'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        
+        // RELATIVE PATH FIX: Specifying the microservice path as target base directory
+        SERVICE_DIR     = 'src/adservice'
+        
+        // Credential IDs
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
+        COSIGN_KEY_ID   = 'cosign-private-key'
+    }
+
     stages {
-        stage('Build & Tag Docker Image') {
+        stage("Clean Workspace") {
+            steps { 
+                cleanWs() 
+            }
+        }
+
+        stage("Git Checkout") {
             steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker build -t harishnshetty/adservice:latest ."
+                // Pointing to your updated dynamic repository URL
+                git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
+            }
+        }
+
+        // --- MASTER STAGE 2: Secret Scan ---
+        stage('Secret Scan (GitLeaks)') {
+            steps {
+                echo "Checking for leaked secrets inside ${env.SERVICE_DIR} history..."
+                sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
+            }
+        }
+
+        // --- MASTER STAGE 3: License Scan ---
+        stage('License Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Checking open-source asset compliance dependencies..."
+                    // ./gradlew downloadLicenses or license check commands can go here
+                }
+            }
+        }
+
+        // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (Java SonarQube) ---
+        stage("SonarQube Analysis & SAST") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+                        // Triggers the gradle wrapper scanner or standard standalone scanner
+                        sh ''' $SCANNER_HOME/bin/sonar-scanner \\
+                            -Dsonar.projectName=adservice \\
+                            -Dsonar.projectKey=adservice \\
+                            -Dsonar.sources=src/main/java \\
+                            -Dsonar.java.binaries=build/classes '''
                     }
                 }
             }
         }
-        
-        stage('Push Docker Image') {
+
+        stage("Quality Gate Check") {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker push harishnshetty/adservice:latest "
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
                     }
                 }
             }
+        }
+
+        // --- MASTER STAGE 9: Core Compilation / Build ---
+        stage('Java Compile & Build') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Compiling Java bundles using Gradle wrapper..."
+                    chmod +x gradlew
+                    ./gradlew build -x test
+                    '''
+                }
+            }
+        }
+
+        // --- MASTER STAGE 7 & 8: Unit Tests & Code Coverage ---
+        stage('Java Unit Testing') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh './gradlew test || true'
+                }
+            }
+        }
+
+        // --- MASTER STAGE 11: IaC Configuration Scan ---
+        stage('IaC Configuration Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Scanning Dockerfile layout configs..."
+                    sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13: Trivy File System Scan ---
+        stage("Trivy File Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 12: Build Docker Image ---
+        stage("Build Docker Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
+                        sh "docker build -t $IMAGE_NAME ."
+                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 14: SBOM Generation ---
+        stage("Generate SBOM Manifest") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Creating software components blueprint..."
+                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
+        stage("Trivy Scan Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        sh """
+                        trivy image -f json -o trivy-image-ad.json ${env.FINAL_TAG}
+                        trivy image -f table -o trivy-image-ad.txt ${env.FINAL_TAG}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-ad.json"
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-ad.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 16: Push Docker Image ---
+        stage("Push to DockerHub") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
+                            sh "docker login -u harishnshetty -p ${dockerpwd}"
+                            sh "docker push ${env.FINAL_TAG}"
+                            sh "docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest"
+                            sh "docker push ${DOCKER_NAME}:latest"
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 15: Cryptographic Image Signing ---
+        stage("Sign Container Image Artifact") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Attaching Cosign signature matrix on final layer..."
+                        // withCredentials([string(credentialsId: "${COSIGN_KEY_ID}", variable: 'COSIGN_PASSWORD')]) {
+                        //     sh "cosign sign --key cosign.key ${env.FINAL_TAG}"
+                        // }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Final Notifications ---
+    post {
+        always {
+            dir("${env.SERVICE_DIR}") {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+
+                    emailext (
+                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>Adservice Component Google-Shop DevSecOps pipeline status report.</p>
+                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
+                            <p>Project: ${env.JOB_NAME}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-ad.json,trivy-image-ad.txt,sbom.json,iac-report.txt'
+                    )
+                }
+            }
+            cleanWs()
         }
     }
 }

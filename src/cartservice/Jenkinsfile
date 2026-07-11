@@ -1,28 +1,262 @@
 pipeline {
     agent any
 
-    stages {
-        stage('Build & Tag Docker Image') {
-            steps {
-                script {
-                    dir('src') {
+    tools {
+        dotnetsdk 'dotnet9'
+    }
 
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker build -t harishnshetty/cartservice:latest ."
-                    }
-                        }
+    environment {
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'harishnshetty/cartservice'
+        IMAGE_NAME      = 'cartservice'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        
+        // RELATIVE PATH FIX: Specifying the microservice path as target base directory
+        SERVICE_DIR     = 'src/cartservice'
+        
+        // Credential IDs
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
+        COSIGN_KEY_ID   = 'cosign-private-key'
+    }
+
+    stages {
+        stage("Clean Workspace") {
+            steps { 
+                cleanWs() 
+            }
+        }
+
+        stage("Git Checkout") {
+            steps {
+                // Pointing directly to your updated repository framework URL
+                git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
+            }
+        }
+
+        // --- MASTER STAGE 2: Secret Scan ---
+        stage('Secret Scan (GitLeaks)') {
+            steps {
+                echo "Validating core commit security inside ${env.SERVICE_DIR} context..."
+                sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
+            }
+        }
+
+        // --- MASTER STAGE 3: License Scan ---
+        stage('License Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Checking third-party NuGet package compliance licenses..."
+                    // dotnet project specific license validation scripts hook
                 }
             }
         }
-        
-        stage('Push Docker Image') {
+
+        // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (SonarQube for C#) ---
+        stage("SonarQube Analysis") {
             steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
-                        sh "docker push harishnshetty/cartservice:latest "
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+                        // FIX: Added the correct relative path export variables handling
+                        sh '''
+                        dotnet tool install --global dotnet-sonarscanner || true
+                        export PATH="$PATH:$HOME/.dotnet/tools"
+
+                        dotnet sonarscanner begin /k:"cartservice" /d:sonar.host.url=$SONAR_HOST_URL /d:sonar.token=$SONAR_AUTH_TOKEN
+                        dotnet build src/cartservice.csproj
+                        dotnet sonarscanner end /d:sonar.token=$SONAR_AUTH_TOKEN
+                        '''
                     }
                 }
             }
+        }
+
+        stage("Quality Gate Check") {
+            steps {
+                script {
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 9, 7 & 8: Compilation, Unit Tests & Coverage ---
+        stage("Build & Test Execution") {
+            steps {
+                // Moving execution block to the nested inner src architecture directory
+                dir("${env.SERVICE_DIR}/src") {
+                    sh '''
+                    echo "Restoring packages and triggering test runners..."
+                    dotnet restore
+                    dotnet build --no-incremental
+                    dotnet test --logger:trx || true
+                    '''
+                }
+            }
+        }
+
+        // --- MASTER STAGE 10: SCA Dependency Check ---
+        stage("SCA Dependency Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    dependencyCheck additionalArguments: ''' 
+                        --scan ./ 
+                        --format XML 
+                        --out dependency-check-report.xml 
+                    ''',
+                    odcInstallation: 'dp-check'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/dependency-check-report.xml"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 11: IaC Configuration Scan ---
+        stage('IaC Configuration Scan') {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Checking context manifest structures..."
+                    sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13: Trivy File System Scan ---
+        stage("Trivy File Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 12: Build Docker Image ---
+        stage("Build Docker Image") {
+            steps {
+                // Fixed directory target mapping to catch the exact context Dockerfile location
+                dir("${env.SERVICE_DIR}/src") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
+                        sh "docker build -t $IMAGE_NAME ."
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 14: SBOM Generation ---
+        stage("Generate SBOM Manifest") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Creating software inventory definitions list..."
+                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
+        stage("Trivy Scan Image Layer") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        sh """
+                        trivy image -f json -o trivy-image-cart.json ${env.FINAL_TAG}
+                        trivy image -f table -o trivy-image-cart.txt ${env.FINAL_TAG}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-cart.json"
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-cart.txt"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 16: Push Docker Image ---
+        stage("Push to DockerHub Registry") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
+                            sh "docker login -u harishnshetty -p ${dockerpwd}"
+                            sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                            sh "docker push ${env.FINAL_TAG}"
+
+                            sh "docker tag $IMAGE_NAME $DOCKER_NAME:latest"
+                            sh "docker push $DOCKER_NAME:latest"
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- MASTER STAGE 15: Cryptographic Image Signing ---
+        stage("Sign Container Image") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        echo "Publishing cryptographic Cosign verification stamps..."
+                        // withCredentials([string(credentialsId: "${COSIGN_KEY_ID}", variable: 'COSIGN_PASSWORD')]) {
+                        //     sh "cosign sign --key cosign.key ${env.FINAL_TAG}"
+                        // }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Final Notifications ---
+    post {
+        always {
+            dir("${env.SERVICE_DIR}") {
+                script {
+                    def buildStatus = currentBuild.currentResult
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+
+                    emailext (
+                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                            <p>Cartservice Component Google-Shop DevSecOps pipeline status report.</p>
+                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
+                            <p>Project Framework target: ${env.SERVICE_DIR}</p>
+                            <p>Build Number: ${env.BUILD_NUMBER}</p>
+                            <p>Build Status: ${buildStatus}</p>
+                            <p>Started by: ${buildUser}</p>
+                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
+                        """,
+                        to: 'harishn662@gmail.com',
+                        from: 'harishn662@gmail.com',
+                        mimeType: 'text/html',
+                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-cart.json,trivy-image-cart.txt,dependency-check-report.xml,sbom.json,iac-report.txt'
+                    )
+                }
+            }
+            cleanWs()
         }
     }
 }

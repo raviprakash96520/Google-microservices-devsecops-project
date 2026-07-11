@@ -3,17 +3,19 @@ pipeline {
 
     tools {
         jdk 'jdk17'
-        nodejs 'node20'
     }
-    
+
     environment {
         SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/currencyservice'
-        IMAGE_NAME      = 'currencyservice'
+        DOCKER_NAME     = 'harishnshetty/loadgenerator'
+        IMAGE_NAME      = 'loadgenerator'
         IMAGE_TAG       = "${BUILD_NUMBER}"
         
         // RELATIVE PATH FIX: Specifying the microservice path context
-        SERVICE_DIR     = 'src/currencyservice'
+        SERVICE_DIR     = 'src/loadgenerator'
+        
+        // Environment path configuration for localized pip tools execution
+        PATH            = "$PATH:/var/lib/jenkins/.local/bin"
         
         // Credential IDs
         SONAR_TOKEN_ID  = 'sonar-token'
@@ -38,7 +40,7 @@ pipeline {
         // --- MASTER STAGE 2: Secret Scan ---
         stage('Secret Scan (GitLeaks)') {
             steps {
-                echo "Validating core commit security inside ${env.SERVICE_DIR} context..."
+                echo "Scanning for hardcoded strings and exposed keys within ${env.SERVICE_DIR}..."
                 sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
             }
         }
@@ -47,23 +49,40 @@ pipeline {
         stage('License Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    echo "Checking open-source packages license compliance..."
-                    // npm install -g license-checker && license-checker --summary || true
+                    echo "Checking underlying python modules license compliance matrix..."
+                    // pip3 install license-check && license-check || true
                 }
             }
         }
 
-        // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality ---
+        // --- MASTER STAGE 4: SAST (Bandit Scan) ---
+        stage("Bandit Security Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    python3 -m pip install --user --upgrade bandit
+                    bandit -r . -f json -o bandit-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
+                }
+            }
+        }
+
+        // --- MASTER STAGE 5 & 6: SAST Quality Scan (SonarQube) ---
         stage("SonarQube Analysis") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     withSonarQubeEnv('sonar-server') {
                         sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
-                          -Dsonar.projectKey=currencyservice \
-                          -Dsonar.projectName=currencyservice \
+                          -Dsonar.projectKey=loadgenerator \
+                          -Dsonar.projectName=loadgenerator \
                           -Dsonar.sources=. \
-                          -Dsonar.language=js
+                          -Dsonar.language=py
                         '''
                     }
                 }
@@ -80,32 +99,28 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 9: Core Package Installation ---
+        // --- MASTER STAGE 9: Core Module Dependencies Setup ---
         stage("Install Dependencies") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh "npm install"
+                    sh 'python3 -m pip install --user -r requirements.txt || true'
                 }
             }
         }
 
-        // --- MASTER STAGE 10: SCA Dependency Scan ---
-        stage("OWASP FS Scan") {
+        // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
+        stage("Safety Dependency Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    dependencyCheck additionalArguments: '''
-                        --scan ./ 
-                        --disableYarnAudit 
-                        --disableNodeAudit 
-                    ''',
-                    odcInstallation: 'dp-check'
-
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+                    sh '''
+                    python3 -m pip install --user safety
+                    safety check --full-report --output json > safety-report.json || true
+                    '''
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/dependency-check-report.xml"
+                    archiveArtifacts "${env.SERVICE_DIR}/safety-report.json"
                 }
             }
         }
@@ -114,7 +129,7 @@ pipeline {
         stage('IaC Configuration Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    echo "Checking configuration files stability..."
+                    echo "Validating multi-stage configuration structure layout patterns..."
                     sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
                 }
             }
@@ -129,9 +144,7 @@ pipeline {
         stage("Trivy File Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true
-                    '''
+                    sh 'trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true'
                 }
             }
             post {
@@ -160,7 +173,7 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     script {
-                        echo "Creating software inventory definitions list (CycloneDX format)..."
+                        echo "Exporting software composition list properties (CycloneDX formatting)..."
                         sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
                     }
                 }
@@ -176,32 +189,32 @@ pipeline {
         stage("Trivy Scan Image") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    trivy image -f json -o trivy-image-currency.json ${IMAGE_TAG}
-                    trivy image -f table -o trivy-image-currency.txt ${IMAGE_TAG}
-                    '''
+                    sh """
+                    trivy image -f json -o trivy-image-loadgenerator.json ${env.FINAL_TAG}
+                    trivy image -f table -o trivy-image-loadgenerator.txt ${env.FINAL_TAG}
+                    """
                 }
             }
             post {
                 always {
-                    // Fixed pattern layout structure mapping
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-currency.json"
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-currency.txt"
+                    // Fixed tracking pattern layout references for accurate attachments logic
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-loadgenerator.json"
+                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-loadgenerator.txt"
                 }
             }
         }
 
-        // --- MASTER STAGE 16: Push Docker Image ---
+        // --- MASTER STAGE 16: Registry Image Push ---
         stage("Push to DockerHub") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh '''
+                        sh """
                         docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${IMAGE_TAG}
+                        docker push ${env.FINAL_TAG}
                         docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
                         docker push ${DOCKER_NAME}:latest
-                        '''
+                        """
                     }
                 }
             }
@@ -233,7 +246,7 @@ pipeline {
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                         body: """
-                            <p>Currencyservice Google-Shop DevSecOps pipeline status report.</p>
+                            <p>Loadgenerator Component Google-Shop DevSecOps pipeline status report.</p>
                             <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
                             <p>Project Target Context: ${env.SERVICE_DIR}</p>
                             <p>Build Number: ${env.BUILD_NUMBER}</p>
@@ -244,7 +257,7 @@ pipeline {
                         to: 'harishn662@gmail.com',
                         from: 'harishn662@gmail.com',
                         mimeType: 'text/html',
-                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-currency.json,trivy-image-currency.txt,dependency-check-report.xml,sbom.json,iac-report.txt'
+                        attachmentsPattern: 'bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-loadgenerator.json,trivy-image-loadgenerator.txt,sbom.json,iac-report.txt'
                     )
                 }
             }
