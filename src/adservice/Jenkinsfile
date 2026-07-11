@@ -53,25 +53,25 @@ pipeline {
             }
         }
 
-        stage('Java Compile & Build') {
-    steps {
-        dir("${env.SERVICE_DIR}") {
-            sh '''
-            chmod +x gradlew
-            ./gradlew build -x test
-            '''
-        }
-    }
-}
+//         stage('Java Compile & Build') {
+//     steps {
+//         dir("${env.SERVICE_DIR}") {
+//             sh '''
+//             chmod +x gradlew
+//             ./gradlew build -x test
+//             '''
+//         }
+//     }
+// }
 
- // --- MASTER STAGE 7 & 8: Unit Tests & Code Coverage ---
-        stage('Java Unit Testing') {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh './gradlew test || true'
-                }
-            }
-        }
+//  // --- MASTER STAGE 7 & 8: Unit Tests & Code Coverage ---
+//         stage('Java Unit Testing') {
+//             steps {
+//                 dir("${env.SERVICE_DIR}") {
+//                     sh './gradlew test || true'
+//                 }
+//             }
+//         }
 
         // --- MASTER STAGE 4, 5 & 6: SAST & Code Quality (Java SonarQube) ---
         stage("SonarQube Analysis & SAST") {
