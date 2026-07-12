@@ -3,263 +3,275 @@ pipeline {
 
     tools {
         go 'go1.25'
-        jdk 'jdk17' // Required for SonarQube Scanner run avvadaniki
+        jdk 'jdk17'
     }
 
     environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_NAME  = 'harishnshetty/shippingservice' // Deeni mee DockerHub username ki marchukondi
-        IMAGE_NAME   = 'shippingservice'
-        GO_BIN_PATH  = '$(go env GOPATH)/bin'
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'ravi6198/shippingservice'
+        IMAGE_NAME      = 'shippingservice'
+        SERVICE_DIR     = 'src/shippingservice'
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
     }
 
     stages {
-        // 1. Workspace Cleanup
         stage("Clean Workspace") {
-            steps {   cleanWs() }
+            steps {
+                cleanWs()
+            }
         }
 
-        // 2. Git Checkout
         stage("Git Checkout") {
             steps {
                 git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
             }
         }
 
-        // 3. Secret Scan (Gitleaks)
         stage("Gitleaks Secret Scan") {
             steps {
-                dir('src/shippingservice') {
-                    sh 'gitleaks detect --source=. -v || true'
-                }
-            }
-        }
-
-        // 4. License Scan (Trivy License)
-        stage("License Scan") {
-            steps {
-                dir('src/shippingservice') {
-                    sh 'trivy fs . --scanners license --severity HIGH,CRITICAL > trivy-license-report.txt || true'
-                }
-            }
-            post {
-                always { archiveArtifacts 'src/shippingservice/trivy-license-report.txt' }
-            }
-        }
-
-        // 5. SAST: Go Security Scan (gosec)
-        stage('Go Security Scan (gosec)') {
-            steps {
-                dir('src/shippingservice') {
-                    script {
-                        sh '''
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-                        if ! command -v gosec &> /dev/null; then
-                            echo "Installing gosec..."
-                            go install github.com/securego/gosec/v2/cmd/gosec@latest
-                        fi
-                        echo "Running gosec scan..."
-                        gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
-                        '''
-                    }
-                }
-            }
-            post {
-                always { archiveArtifacts 'src/shippingservice/gosec-report.json' }
-            }
-        }
-
-        // 6. Code Quality & SAST Ingestion: SonarQube
-        stage("SonarQube Analysis") {
-            steps {
-                dir('src/shippingservice') {
-                    withSonarQubeEnv('sonar-server') {
-                        sh '''
-                        $SCANNER_HOME/bin/sonar-scanner \
-                            -Dsonar.projectName=shippingservice \
-                            -Dsonar.projectKey=shippingservice \
-                            -Dsonar.sources=. \
-                            -Dsonar.language=go \
-                            -Dsonar.go.gosec.reportPaths=gosec-report.json
-                        '''
-                    }
-                }
-            }
-        }
-
-        // 7. Quality Gate (Activated)
-        stage("Quality Gate") {
-            steps {
-                script {
-                    timeout(time: 3, unit: 'MINUTES') {
-                        waitForQualityGate abortPipeline: true, credentialsId: 'sonar-token'
-                    }
-                }
-            }
-        }
-
-        // 8. Unit Test & Code Coverage
-        stage('Go Unit Tests & Coverage') {
-            steps {
-                dir('src/shippingservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    echo "Running unit tests with coverage..."
-                    go test -v -coverprofile=coverage.out ./... || true
+                    echo "Running Gitleaks scan..."
+                    gitleaks detect --source=. -v || true
                     '''
                 }
             }
         }
 
-        // 9. Go Build
-        stage('Go Build') {
+        stage("License Scan") {
             steps {
-                dir('src/shippingservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    echo "Building Go shippingservice application..."
+                    trivy fs . --scanners license --severity HIGH,CRITICAL > trivy-license-report.txt || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-license-report.txt", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage("Go Security Scan (gosec)") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    export PATH=$PATH:$(go env GOPATH)/bin
+                    if ! command -v gosec >/dev/null; then
+                        echo "Installing gosec..."
+                        go install github.com/securego/gosec/v2/cmd/gosec@latest
+                    fi
+                    gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/gosec-report.json", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withSonarQubeEnv('sonar-server') {
+                        sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                          -Dsonar.projectName=shippingservice \
+                          -Dsonar.projectKey=shippingservice \
+                          -Dsonar.sources=. \
+                          -Dsonar.language=go \
+                          -Dsonar.go.gosec.reportPaths=gosec-report.json
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage("Quality Gate") {
+            steps {
+                script {
+                    timeout(time: 3, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
+                    }
+                }
+            }
+        }
+
+        stage("Go Unit Tests") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh 'go test -v -coverprofile=coverage.out ./... || true'
+                }
+            }
+        }
+
+        stage("Go Build") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Building shippingservice"
                     CGO_ENABLED=0 go build -o app .
                     '''
                 }
             }
         }
 
-        // 10. SCA: Dependency Check (govulncheck)
-        stage('Go Dependency Check (govulncheck)') {
+        stage("Go Dependency Check") {
             steps {
-                dir('src/shippingservice') {
-                    script {
-                        sh '''
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-                        if ! command -v govulncheck &> /dev/null; then
-                            echo "Installing govulncheck..."
-                            go install golang.org/x/vuln/cmd/govulncheck@latest
-                        fi
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-                        echo "Running govulncheck..."
-                        govulncheck ./... > govulncheck-report.txt || true
-                        '''
-                    }
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    export PATH=$PATH:$(go env GOPATH)/bin
+                    if ! command -v govulncheck >/dev/null; then
+                       go install golang.org/x/vuln/cmd/govulncheck@latest
+                    fi
+                    govulncheck ./... > govulncheck-report.txt || true
+                    '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/shippingservice/govulncheck-report.txt' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/govulncheck-report.txt", allowEmptyArchive: true
+                }
             }
         }
 
-        // 11. IaC Scan (Checkov)
         stage("Checkov IaC Scan") {
             steps {
-                dir('src/shippingservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user checkov
+                    python3 -m pip install --user checkov --break-system-packages || true
                     checkov -d . --output json > checkov-report.json || true
                     '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/shippingservice/checkov-report.json' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/checkov-report.json", allowEmptyArchive: true
+                }
             }
         }
 
-        // 12. Trivy File System Scan
         stage("Trivy File Scan") {
             steps {
-                dir('src/shippingservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    trivy fs . \
-                        --severity CRITICAL,HIGH \
-                        --exit-code 1 \
-                        --scanners vuln,misconfig,secret \
-                        > trivy-fs-report.txt || true
+                    trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true
                     '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/shippingservice/trivy-fs-report.txt' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-fs-report.txt", allowEmptyArchive: true
+                }
             }
         }
 
-        // 13. Docker Build
         stage("Build Docker Image") {
             steps {
-                dir('src/shippingservice') {
+                dir("${env.SERVICE_DIR}") {
                     script {
-                        env.IMAGE_TAG = "$DOCKER_NAME:${BUILD_NUMBER}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.IMAGE_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.IMAGE_TAG}"
+                        env.IMAGE_TAG = "${DOCKER_NAME}:${BUILD_NUMBER}"
+                        sh """
+                        echo "Current Directory: \$(pwd)"
+                        echo "Dockerfile first lines:"
+                        head -5 Dockerfile
+
+                        docker rmi -f ${IMAGE_NAME} ${env.IMAGE_TAG} || true
+                        docker build -t ${IMAGE_NAME} .
+                        docker tag ${IMAGE_NAME} ${env.IMAGE_TAG}
+                        """
                     }
                 }
             }
         }
 
-        // 14. Container Image Scan (Trivy Image) - Before Push
+        stage("Generate SBOM Manifest") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh 'trivy image --format cyclonedx --output sbom.json ${IMAGE_TAG}'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/sbom.json", allowEmptyArchive: true
+                }
+            }
+        }
+
         stage("Trivy Scan Image") {
             steps {
-                dir('src/shippingservice') {
-                    sh '''
-                    trivy image -f json -o trivy-image-shippingservice.json ${IMAGE_TAG}
-                    trivy image -f table -o trivy-image-shippingservice.txt ${IMAGE_TAG}
-                    '''
+                dir("${env.SERVICE_DIR}") {
+                    sh """
+                    trivy image -f json -o trivy-image-shippingservice.json ${env.IMAGE_TAG}
+                    trivy image -f table -o trivy-image-shippingservice.txt ${env.IMAGE_TAG}
+                    """
                 }
             }
             post {
-                always { archiveArtifacts 'src/shippingservice/trivy-image-shippingservice.*' }
-            }
-        }
-
-        // 15. SBOM Generation
-        stage("SBOM Generation") {
-            steps {
-                dir('src/shippingservice') {
-                    sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_TAG} || true"
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-shippingservice.json", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-shippingservice.txt", allowEmptyArchive: true
                 }
             }
-            post {
-                always { archiveArtifacts 'src/shippingservice/sbom.json' }
-            }
         }
 
-        // 16. Push Registry & Image Signing
-        stage("Push & Sign Image") {
+        stage("Push Image To DockerHub") {
             steps {
-                dir('src/shippingservice') {
-                    withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
+                dir("${env.SERVICE_DIR}") {
+                    withCredentials([
+                        usernamePassword(
+                        credentialsId: 'docker-cred',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                        )
+                        ]) {
                         sh '''
-                        docker login -u harishnshetty -p ${dockerpwd}
+                        echo "$dockerpwd" | docker login -u ravi6198 --password-stdin
                         docker push ${IMAGE_TAG}
                         docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
                         docker push ${DOCKER_NAME}:latest
                         '''
                     }
-                    sh "cosign sign --key env://COSIGN_PRIVATE_KEY ${IMAGE_TAG} --allow-insecure-registry || true"
                 }
+            }
+        }
+
+        stage("Cosign Image Signing") {
+            steps {
+                echo "Cosign signing skipped"
             }
         }
     }
 
-    // --- Final Notifications ---
     post {
         always {
-            dir('src/shippingservice') {
+            dir("${env.SERVICE_DIR}") {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Jenkins User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Jenkins User'
 
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                         body: """
-                            <p>shippingservice Google-Shop DevSecOps pipeline status.</p>
+                            <p>Shippingservice Google-Shop DevSecOps Pipeline Report</p>
                             <p>Project: ${env.JOB_NAME}</p>
                             <p>Build Number: ${env.BUILD_NUMBER}</p>
-                            <p>Build Status: ${buildStatus}</p>
-                            <p>Started by: ${buildUser}</p>
+                            <p>Status: ${buildStatus}</p>
+                            <p>Started By: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
-                        attachmentsPattern: 'gosec-report.json,trivy-license-report.txt,govulncheck-report.txt,checkov-report.json,trivy-fs-report.txt,trivy-image-shippingservice.json,trivy-image-shippingservice.txt,sbom.json'
+                        attachmentsPattern: 'gosec-report.json,govulncheck-report.txt,checkov-report.json,trivy-license-report.txt,trivy-fs-report.txt,trivy-image-shippingservice.json,trivy-image-shippingservice.txt,sbom.json'
                     )
                 }
             }
+            cleanWs()
         }
+    }
+}
