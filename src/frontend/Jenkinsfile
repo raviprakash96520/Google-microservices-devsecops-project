@@ -7,7 +7,7 @@ pipeline {
 
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_NAME  = 'harishnshetty/frontend'
+        DOCKER_NAME  = 'ravi6198/frontend'
         IMAGE_NAME   = 'frontend'
         IMAGE_TAG    = "${BUILD_NUMBER}"
         
@@ -248,22 +248,37 @@ pipeline {
         }
 
         // ---- MASTER STAGE 16: Push Registry System ----
-        stage("Push Image to DockerHub") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                            sh "docker login -u harishnshetty -p ${dockerpwd}"
-                            sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
-                            sh "docker push ${env.FINAL_TAG}"
+       stage("Push Image to DockerHub") {
 
-                            sh "docker tag $IMAGE_NAME $DOCKER_NAME:latest"
-                            sh "docker push $DOCKER_NAME:latest"
-                        }
-                    }
-                }
+    steps {
+
+        dir("${env.SERVICE_DIR}") {
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: "${DOCKER_CREDS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )
+            ]) {
+
+                sh '''
+                
+                echo $DOCKER_PASSWORD | docker login \
+                -u $DOCKER_USER \
+                --password-stdin
+
+                docker push ${FINAL_TAG}
+
+                '''
+
             }
+
         }
+
+    }
+
+}
 
         // --- MASTER STAGE 15: Cryptographic Image Signing ---
         stage("Sign Built Container Artifact") {
@@ -298,8 +313,8 @@ pipeline {
                             <p>Started by: ${buildUser}</p>
                             <p>Workspace Execution URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
                         // Fixed explicit subfolder dynamic target lookups for attachment profiles
                         attachmentsPattern: 'trivy-fs-report.txt,trivy-image-frontend.json,trivy-image-frontend.txt,gosec-report.json,sbom.json,iac-report.txt'
