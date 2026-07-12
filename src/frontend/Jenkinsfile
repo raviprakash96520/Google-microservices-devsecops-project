@@ -185,10 +185,7 @@ pipeline {
                     script {
                         env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
                         sh """
-                        export DOCKER_BUILDKIT=1
-                        docker build \
-                            --build-arg BUILDPLATFORM=linux/amd64 \
-                            -t ${env.FINAL_TAG} .
+                       docker build -t ${env.FINAL_TAG} .
                         """
                     }
                 }
