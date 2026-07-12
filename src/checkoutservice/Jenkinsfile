@@ -1,5 +1,4 @@
 pipeline {
-
     agent any
 
     tools {
@@ -7,55 +6,36 @@ pipeline {
     }
 
     environment {
-
-        SERVICE_DIR = "src/checkoutservice"
-
-        DOCKER_USER = "ravi6198"
-        IMAGE_NAME  = "checkoutservice"
-
-        IMAGE_TAG   = "${BUILD_NUMBER}"
-        IMAGE       = "${DOCKER_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
-
-        SCANNER_HOME = tool 'sonar-scanner'
-
-        SONAR_TOKEN_ID = "sonar-token"
+        SERVICE_DIR     = "src/checkoutservice"
+        DOCKER_USER     = "ravi6198"
+        IMAGE_NAME      = "checkoutservice"
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        IMAGE           = "${DOCKER_USER}/${IMAGE_NAME}:${BUILD_NUMBER}"
+        SCANNER_HOME    = tool 'sonar-scanner'
+        SONAR_TOKEN_ID  = "sonar-token"
         DOCKER_CREDS_ID = "docker-cred"
-
     }
 
-
     stages {
-
-
         stage("Clean Workspace") {
-
             steps {
                 cleanWs()
             }
         }
 
-
         stage("Checkout Code") {
-
             steps {
-
                 git(
                     branch: 'main',
                     url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
                 )
-
             }
         }
 
-
-
         stage("Install Go Tools") {
-
             steps {
-
                 sh '''
                 export PATH=$PATH:$(go env GOPATH)/bin
-
                 echo "Go Version"
                 go version
 
@@ -65,617 +45,257 @@ pipeline {
                     go install github.com/securego/gosec/v2/cmd/gosec@latest
                 fi
 
-
                 if ! command -v govulncheck
                 then
                     echo "Installing govulncheck"
                     go install golang.org/x/vuln/cmd/govulncheck@latest
                 fi
-
-
                 '''
-
             }
         }
 
-
-
         stage("Git Secret Scan") {
-
-
             steps {
-
                 dir("${SERVICE_DIR}") {
-
                     sh '''
-
                     echo "Running Gitleaks scan"
-
                     gitleaks detect \
                     --source . \
                     --verbose \
                     --no-banner || true
-
-
                     '''
-
                 }
-
             }
-
         }
 
-
-
-
         stage("Go Security Scan - gosec") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     export PATH=$PATH:$(go env GOPATH)/bin
-
-
                     gosec \
                     -fmt=sonarqube \
                     -out=gosec-report.json \
                     -no-fail \
                     ./...
-
-
                     '''
-
                 }
-
             }
-
-
             post {
-
                 always {
-
-                    archiveArtifacts artifacts: "${SERVICE_DIR}/gosec-report.json",
-                    allowEmptyArchive: true
-
+                    archiveArtifacts artifacts: "${SERVICE_DIR}/gosec-report.json", allowEmptyArchive: true
                 }
-
             }
-
-
         }
 
-
-
-
         stage("SonarQube Analysis") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     withSonarQubeEnv('sonar-server') {
-
-
                         sh '''
-
                         ${SCANNER_HOME}/bin/sonar-scanner \
                         -Dsonar.projectName=checkoutservice \
                         -Dsonar.projectKey=checkoutservice \
                         -Dsonar.sources=. \
                         -Dsonar.go.gosec.reportPaths=gosec-report.json \
                         -Dsonar.go.coverage.reportPaths=coverage.out
-
-
                         '''
-
                     }
-
                 }
-
             }
-
         }
-
-
-
-
 
         stage("Quality Gate") {
-
-
             steps {
-
-
-                timeout(
-                    time:5,
-                    unit:'MINUTES'
-                ){
-
-
-                    waitForQualityGate(
-                        abortPipeline:true
-                    )
-
-
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate(abortPipeline: true)
                 }
-
             }
-
         }
 
-
-
-
-
         stage("Go Unit Test") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     echo "Running Unit Tests"
-
-
                     go test \
                     -v \
                     -coverprofile=coverage.out \
                     ./...
-
-
                     '''
-
                 }
-
             }
-
         }
 
-
-
-
-
         stage("Go Build") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     echo "Building application"
-
-
                     CGO_ENABLED=0 \
                     go build \
                     -o app .
-
-
                     '''
-
                 }
-
             }
-
         }
-
-
-
-    }
-
-}
 
         stage("Go Vulnerability Scan") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     export PATH=$PATH:$(go env GOPATH)/bin
-
-
                     echo "Running govulncheck"
-
-
                     govulncheck ./... || true
-
-
                     '''
-
                 }
-
             }
-
         }
 
-
-
-
         stage("IaC Scan - Trivy Config") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     echo "Scanning Dockerfile and IaC files"
-
-
                     trivy config . \
                     --severity HIGH,CRITICAL \
                     -o iac-report.txt || true
-
-
                     '''
-
                 }
-
             }
-
-
             post {
-
                 always {
-
-                    archiveArtifacts artifacts:"${SERVICE_DIR}/iac-report.txt",
-                    allowEmptyArchive:true
-
+                    archiveArtifacts artifacts: "${SERVICE_DIR}/iac-report.txt", allowEmptyArchive: true
                 }
-
             }
-
         }
 
-
-
-
-
         stage("Trivy Filesystem Scan") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     echo "Filesystem vulnerability scan"
-
-
                     trivy fs . \
                     --scanners vuln,misconfig,secret \
                     --severity HIGH,CRITICAL \
                     -o trivy-fs-report.txt || true
-
-
                     '''
-
                 }
-
-
             }
-
-
             post {
-
-
                 always {
-
-
-                    archiveArtifacts artifacts:"${SERVICE_DIR}/trivy-fs-report.txt",
-                    allowEmptyArchive:true
-
-
+                    archiveArtifacts artifacts: "${SERVICE_DIR}/trivy-fs-report.txt", allowEmptyArchive: true
                 }
-
             }
-
         }
-
-
-
-
-
 
         stage("Docker Build") {
-
-
             steps {
-
-
                 dir("${SERVICE_DIR}") {
-
-
                     sh '''
-
                     echo "Building Docker Image"
-
-
-                    docker build \
-                    -t ${IMAGE_NAME}:${IMAGE_TAG} .
-
-
-                    docker tag \
-                    ${IMAGE_NAME}:${IMAGE_TAG} \
-                    ${IMAGE}
-
-
+                    docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                    docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE}
                     '''
-
                 }
-
             }
-
         }
 
-
-
-
-
-
-
         stage("Generate SBOM") {
-
-
             steps {
-
-
                 sh '''
-
                 echo "Generating CycloneDX SBOM"
-
-
                 trivy image \
                 --format cyclonedx \
                 --output sbom.json \
                 ${IMAGE_NAME}:${IMAGE_TAG}
-
-
                 '''
-
-
             }
-
-
             post {
-
-
                 always {
-
-
-                    archiveArtifacts artifacts:"sbom.json",
-                    allowEmptyArchive:true
-
-
+                    archiveArtifacts artifacts: "sbom.json", allowEmptyArchive: true
                 }
-
             }
-
         }
 
-
-
-
-
-
-
         stage("Container Image Scan") {
-
-
             steps {
-
-
                 sh '''
-
-
                 echo "Scanning Docker Image"
-
-
                 trivy image \
                 --format table \
                 --output trivy-image-report.txt \
                 ${IMAGE_NAME}:${IMAGE_TAG} || true
 
-
-
                 trivy image \
                 --format json \
                 --output trivy-image-report.json \
                 ${IMAGE_NAME}:${IMAGE_TAG} || true
-
-
-
                 '''
-
-
             }
-
-
             post {
-
-
                 always {
-
-
-                    archiveArtifacts artifacts:"trivy-image-report.*",
-                    allowEmptyArchive:true
-
-
+                    archiveArtifacts artifacts: "trivy-image-report.*", allowEmptyArchive: true
                 }
-
             }
-
         }
 
-
-    stage("DockerHub Push") {
-
-    steps {
-
-        withCredentials([
-            usernamePassword(
-                credentialsId: 'docker-cred',
-                usernameVariable: 'DOCKER_USERNAME',
-                passwordVariable: 'DOCKER_PASSWORD'
-            )
-        ]) {
-
-            sh '''
-
-            echo $DOCKER_PASSWORD | docker login \
-            -u $DOCKER_USERNAME \
-            --password-stdin
-
-
-            docker push ${IMAGE}
-
-
-            docker tag ${IMAGE} \
-            ${DOCKER_USERNAME}/${IMAGE_NAME}:latest
-
-
-            docker push \
-            ${DOCKER_USERNAME}/${IMAGE_NAME}:latest
-
-
-            '''
-
+        stage("DockerHub Push") {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker-cred',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                    echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+                    docker push ${IMAGE}
+                    docker tag ${IMAGE} ${DOCKER_USERNAME}/${IMAGE_NAME}:latest
+                    docker push ${DOCKER_USERNAME}/${IMAGE_NAME}:latest
+                    '''
+                }
+            }
         }
-
-    }
-
-}
-
-
 
         stage("Cosign Image Signing") {
-
-
             steps {
-
-
                 echo """
-                
                 Cosign signing stage placeholder.
-
                 Enable after configuring:
                 - cosign binary
                 - private key
                 - Jenkins credential
-
                 """
-
                 /*
                 sh '''
-                cosign sign \
-                --key cosign.key \
-                ${IMAGE}
+                cosign sign --key cosign.key ${IMAGE}
                 '''
                 */
-
             }
-
         }
-
-
-
-    
-
-
-    post {
-
-
-        always {
-
-
-            script {
-
-
-                def status = currentBuild.currentResult
-
-
-                emailext(
-
-                    subject:
-                    "Checkoutservice Pipeline ${status} - Build #${BUILD_NUMBER}",
-
-
-                    body:
-                    """
-
-                    <h3>Google Microservices DevSecOps Pipeline</h3>
-
-                    <p>
-                    Service : ${SERVICE_DIR}
-                    </p>
-
-                    <p>
-                    Build Number : ${BUILD_NUMBER}
-                    </p>
-
-                    <p>
-                    Status : ${status}
-                    </p>
-
-                    <p>
-                    URL :
-                    ${BUILD_URL}
-                    </p>
-
-
-                    """,
-
-
-                    to:
-                    "harishn662@gmail.com",
-
-
-                    mimeType:
-                    "text/html",
-
-
-                    attachmentsPattern:
-                    "**/trivy-*.txt,**/trivy-*.json,**/sbom.json,**/gosec-report.json,**/iac-report.txt"
-
-                )
-
-
-            }
-
-
-            cleanWs()
-
-        }
-
-
     }
 
-
+    post {
+        always {
+            script {
+                def status = currentBuild.currentResult
+                emailext(
+                    subject: "Checkoutservice Pipeline ${status} - Build #${BUILD_NUMBER}",
+                    body: """
+                    <h3>Google Microservices DevSecOps Pipeline</h3>
+                    <p>Service : ${SERVICE_DIR}</p>
+                    <p>Build Number : ${BUILD_NUMBER}</p>
+                    <p>Status : ${status}</p>
+                    <p>URL : ${BUILD_URL}</p>
+                    """,
+                    to: "harishn662@gmail.com",
+                    mimeType: "text/html",
+                    attachmentsPattern: "**/trivy-*.txt,**/trivy-*.json,**/sbom.json,**/gosec-report.json,**/iac-report.txt"
+                )
+            }
+            cleanWs()
+        }
+    }
 }
