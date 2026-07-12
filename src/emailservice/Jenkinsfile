@@ -107,17 +107,21 @@ pipeline {
 
         // --- MASTER STAGE 9: Core Module Dependencies Setup ---
         stage("Install Dependencies") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh 'python3 -m pip install --user -r requirements.txt || true'
-                }
-            }
+    steps {
+        dir("${SERVICE_DIR}") {
+            sh '''
+            . venv/bin/activate || true
+            pip install -r requirements.txt || true
+            '''
         }
-
+    }
+}
         // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
         
         // --- MASTER STAGE 11: IaC Configuration Scan ---
-       stage("Safety Dependency Scan") {
+       // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
+
+stage("Safety Dependency Scan") {
     steps {
         dir("${SERVICE_DIR}") {
             sh '''
@@ -128,16 +132,45 @@ pipeline {
             pip install safety
 
             safety check --full-report --output json > safety-report.json || true
+
+            ls -l safety-report.json || true
             '''
         }
     }
 
-            post {
-                always {
-                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
-                }
-            }
+    post {
+        always {
+            archiveArtifacts artifacts: "${env.SERVICE_DIR}/safety-report.json", allowEmpty: true
         }
+    }
+}
+
+
+// --- MASTER STAGE 11: IaC Configuration Scan ---
+
+stage("IaC Configuration Scan") {
+    steps {
+        dir("${SERVICE_DIR}") {
+
+            sh '''
+            echo "Running Trivy IaC scan..."
+
+            trivy config . \
+            --severity HIGH,CRITICAL \
+            -o iac-report.txt || true
+
+            ls -l iac-report.txt || true
+            '''
+
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: "${env.SERVICE_DIR}/iac-report.txt", allowEmpty: true
+        }
+    }
+}
 
         // --- MASTER STAGE 13: Trivy File System Scan ---
         stage("Trivy File Scan") {
