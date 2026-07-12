@@ -6,65 +6,74 @@ pipeline {
     }
 
     environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_NAME  = 'harishnshetty/recommendationservice' // Deeni mee DockerHub username ki marchukondi block avvakunda
-        IMAGE_NAME   = 'recommendationservice'
-        PATH         = "$PATH:/var/lib/jenkins/.local/bin"   // Pip binaries path
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'ravi6198/recommendationservice'
+        IMAGE_NAME      = 'recommendationservice'
+        SERVICE_DIR     = 'src/recommendationservice'
+        SONAR_TOKEN_ID  = 'sonar-token'
+        DOCKER_CREDS_ID = 'docker-cred'
+        EMAIL_ID        = 'ravireddy6198@gmail.com'
     }
 
     stages {
-        // 1. Workspace Cleanup
         stage("Clean Workspace") {
-            steps { cleanWs() }
+            steps {
+                cleanWs()
+            }
         }
 
-        // 2. Git Checkout (Updated with your new repository)
         stage("Git Checkout") {
             steps {
                 git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
             }
         }
 
-        // 3. Secret Scan (Gitleaks)
         stage("Gitleaks Secret Scan") {
             steps {
-                dir('src/recommendationservice') {
-                    sh 'gitleaks detect --source=. -v || true'
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Running secret scan..."
+                    gitleaks detect --source=. --verbose || true
+                    '''
                 }
             }
         }
 
-        // 4. License Scan (Trivy License)
         stage("License Scan") {
             steps {
-                dir('src/recommendationservice') {
-                    sh 'trivy fs . --scanners license --severity HIGH,CRITICAL > trivy-license-report.txt || true'
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    echo "Running license scan..."
+                    trivy fs . --scanners license --severity HIGH,CRITICAL > trivy-license-report.txt || true
+                    '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/trivy-license-report.txt' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-license-report.txt", allowEmptyArchive: true
+                }
             }
         }
 
-        // 5. SAST: Bandit (Python Specific)
         stage("Bandit Security Scan") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user --upgrade bandit
+                    python3 -m pip install --user bandit
                     bandit -r . -f json -o bandit-report.json || true
                     '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/bandit-report.json' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/bandit-report.json", allowEmptyArchive: true
+                }
             }
         }
 
-        // 6. SAST & Code Quality: SonarQube
         stage("SonarQube Analysis") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     withSonarQubeEnv('sonar-server') {
                         sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
@@ -78,42 +87,38 @@ pipeline {
             }
         }
 
-        // 7. Quality Gate
         stage("Quality Gate") {
             steps {
                 script {
                     timeout(time: 3, unit: 'MINUTES') {
-                        waitForQualityGate abortPipeline: true, credentialsId: 'sonar-token'
+                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
                     }
                 }
             }
         }
 
-        // 8. Install Dependencies
         stage("Install Dependencies") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh 'python3 -m pip install --user -r requirements.txt || true'
                 }
             }
         }
 
-        // 9. Unit Test & Code Coverage
-        stage("Unit Test & Code Coverage") {
+        stage("Unit Test & Coverage") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
                     python3 -m pip install --user pytest pytest-cov
-                    python3 -m pytest --cov=. --cov-report=xml || true
+                    pytest --cov=. --cov-report=xml || true
                     '''
                 }
             }
         }
 
-        // 10. SCA: Safety Dependency Scan
         stage("Safety Dependency Scan") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
                     python3 -m pip install --user safety
                     safety check --full-report --output json > safety-report.json || true
@@ -121,14 +126,15 @@ pipeline {
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/safety-report.json' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/safety-report.json", allowEmptyArchive: true
+                }
             }
         }
 
-        // 11. IaC Scan (Checkov)
         stage("Checkov IaC Scan") {
             steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
                     python3 -m pip install --user checkov
                     checkov -d . --output json > checkov-report.json || true
@@ -136,106 +142,137 @@ pipeline {
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/checkov-report.json' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/checkov-report.json", allowEmptyArchive: true
+                }
             }
         }
 
-        // 12. Trivy File System Scan
         stage("Trivy File Scan") {
             steps {
-                dir('src/recommendationservice') {
-                    sh 'trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true'
-                }
-            }
-            post {
-                always { archiveArtifacts 'src/recommendationservice/trivy-fs-report.txt' }
-            }
-        }
-
-        // 13. Docker Build
-        stage("Build Docker Image") {
-            steps {
-                dir('src/recommendationservice') {
-                    script {
-                        env.IMAGE_TAG = "$DOCKER_NAME:${BUILD_NUMBER}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.IMAGE_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.IMAGE_TAG}"
-                    }
-                }
-            }
-        }
-
-        // 14. Container Image Scan (Trivy Image)
-        stage("Trivy Scan Image") {
-            steps {
-                dir('src/recommendationservice') {
+                dir("${env.SERVICE_DIR}") {
                     sh '''
-                    trivy image -f json -o trivy-image-email.json ${IMAGE_TAG}
-                    trivy image -f table -o trivy-image-email.txt ${IMAGE_TAG}
+                    trivy fs . --severity CRITICAL,HIGH --scanners vuln,misconfig,secret --exit-code 1 > trivy-fs-report.txt || true
                     '''
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/trivy-image-email.*' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-fs-report.txt", allowEmptyArchive: true
+                }
             }
         }
 
-        // 15. SBOM Generation
-        stage("SBOM Generation") {
+        stage("Build Docker Image") {
             steps {
-                dir('src/recommendationservice') {
-                    sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_TAG} || true"
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${BUILD_NUMBER}"
+                        sh """
+                        echo "Removing old image if exists..."
+                        docker rmi -f ${IMAGE_NAME} ${env.FINAL_TAG} || true
+
+                        echo "Building Docker Image..."
+                        docker build -t ${IMAGE_NAME} .
+
+                        echo "Tagging image..."
+                        docker tag ${IMAGE_NAME} ${env.FINAL_TAG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Generate SBOM Manifest") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh 'trivy image --format cyclonedx --output sbom.json ${FINAL_TAG}'
                 }
             }
             post {
-                always { archiveArtifacts 'src/recommendationservice/sbom.json' }
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/sbom.json", allowEmptyArchive: true
+                }
             }
         }
 
-        // 16. Push Registry & Image Signing
-        stage("Push & Sign Image") {
+        stage("Trivy Container Image Scan") {
             steps {
-                dir('src/recommendationservice') {
-                    withCredentials([string(credentialsId: 'docker-cred', variable: 'dockerpwd')]) {
+                dir("${env.SERVICE_DIR}") {
+                    sh """
+                    trivy image -f json -o trivy-image-recommendationservice.json ${env.FINAL_TAG}
+                    trivy image -f table -o trivy-image-recommendationservice.txt ${env.FINAL_TAG}
+                    """
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-recommendationservice.json", allowEmptyArchive: true
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-recommendationservice.txt", allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage("Push Image To DockerHub") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withCredentials([
+                        string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')
+                    ]) {
                         sh '''
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${IMAGE_TAG}
+                        echo "Docker login..."
+                        echo "$dockerpwd" | docker login -u ravi6198 --password-stdin
+
+                        echo "Pushing version image..."
+                        docker push ${FINAL_TAG}
+
+                        echo "Creating latest tag..."
                         docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
+
+                        echo "Pushing latest image..."
                         docker push ${DOCKER_NAME}:latest
                         '''
                     }
-                    sh "cosign sign --key env://COSIGN_PRIVATE_KEY ${IMAGE_TAG} --allow-insecure-registry || true"
+                }
+            }
+        }
+
+        stage("Cosign Image Signing") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    echo "Cosign signing skipped - key not configured"
+                    // Enable after adding Jenkins cosign key credential
                 }
             }
         }
     }
 
-    // --- Final Notifications ---
     post {
         always {
-            dir('src/recommendationservice') {
+            dir("${env.SERVICE_DIR}") {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Jenkins User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Jenkins User'
 
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                         body: """
-                            <p>recommendationservice Google-Shop DevSecOps pipeline status.</p>
+                            <h3>Recommendationservice DevSecOps Pipeline Report</h3>
                             <p>Project: ${env.JOB_NAME}</p>
+                            <p>Service: ${env.SERVICE_DIR}</p>
                             <p>Build Number: ${env.BUILD_NUMBER}</p>
-                            <p>Build Status: ${buildStatus}</p>
-                            <p>Started by: ${buildUser}</p>
+                            <p>Status: ${buildStatus}</p>
+                            <p>Started By: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com', // Deeni mee personal email mapped target ki marchukogalaru
-                        from: 'harishn662@gmail.com',
-                        mimeType: 'text/html',
-                        attachmentsPattern: 'bandit-report.json,safety-report.json,checkov-report.json,trivy-fs-report.txt,trivy-license-report.txt,trivy-image-email.json,trivy-image-email.txt,sbom.json'
+                        to: "${EMAIL_ID}",
+                        from: "${EMAIL_ID}",
+                        mimeType: "text/html",
+                        attachmentsPattern: 'bandit-report.json,safety-report.json,checkov-report.json,trivy-license-report.txt,trivy-fs-report.txt,trivy-image-recommendationservice.json,trivy-image-recommendationservice.txt,sbom.json'
                     )
                 }
             }
+            cleanWs()
         }
     }
 }
