@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     tools {
-        jdk 'jdk17'
+        jdk 'jdk19'
         nodejs 'node20'
     }
     
@@ -192,20 +192,35 @@ pipeline {
         }
 
         // --- MASTER STAGE 16: Push Docker Image ---
-        stage("Push to DockerHub") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh '''
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${IMAGE_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        '''
-                    }
-                }
-            }
+       stage("Push to DockerHub") {
+
+    steps {
+
+        withCredentials([
+            usernamePassword(
+                credentialsId: "${DOCKER_CREDS_ID}",
+                usernameVariable: 'DOCKER_USER',
+                passwordVariable: 'DOCKER_PASSWORD'
+            )
+        ]) {
+
+            sh '''
+
+            echo $DOCKER_PASSWORD | docker login \
+            -u $DOCKER_USER \
+            --password-stdin
+
+
+            docker push ${DOCKER_NAME}:${IMAGE_TAG}
+
+
+            '''
+
         }
+
+    }
+
+}
 
         // --- MASTER STAGE 15: Cryptographic Image Signing ---
         stage("Sign Container Image") {
