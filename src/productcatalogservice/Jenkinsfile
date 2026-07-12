@@ -2,20 +2,16 @@ pipeline {
     agent any
 
     tools {
-        go 'go1.25'
-        jdk 'jdk17' // Required for SonarQube Scanner runner execution
+        jdk 'jdk17'
     }
 
     environment {
         SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/productcatalogservice'
-        IMAGE_NAME      = 'productcatalogservice'
+        DOCKER_NAME     = 'ravi6198/loadgenerator'
+        IMAGE_NAME      = 'loadgenerator'
         IMAGE_TAG       = "${BUILD_NUMBER}"
-        
-        // RELATIVE PATH FIX: Specifying the microservice path context
-        SERVICE_DIR     = 'src/productcatalogservice'
-        
-        // Credential IDs
+        SERVICE_DIR     = 'src/loadgenerator'
+        PATH            = "$PATH:/var/lib/jenkins/.local/bin"
         SONAR_TOKEN_ID  = 'sonar-token'
         DOCKER_CREDS_ID = 'docker-cred'
         COSIGN_KEY_ID   = 'cosign-private-key'
@@ -23,8 +19,8 @@ pipeline {
 
     stages {
         stage("Clean Workspace") {
-            steps {
-                cleanWs()
+            steps { 
+                cleanWs() 
             }
         }
 
@@ -38,7 +34,7 @@ pipeline {
         // --- MASTER STAGE 2: Secret Scan ---
         stage('Secret Scan (GitLeaks)') {
             steps {
-                echo "Scanning for hardcoded credentials or tokens within ${env.SERVICE_DIR}..."
+                echo "Scanning for hardcoded strings and exposed keys within ${env.SERVICE_DIR}..."
                 sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
             }
         }
@@ -47,53 +43,59 @@ pipeline {
         stage('License Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    echo "Checking Go module system dependencies compliance licenses..."
-                    // go install github.com/google/go-licenses@latest || true
-                    // export PATH="$PATH:\$(go env GOPATH)/bin" && go-licenses check ./... || true
+                    echo "Checking underlying python modules license compliance matrix..."
+                    // pip3 install license-check && license-check || true
                 }
             }
         }
 
-        // --- MASTER STAGE 4: SAST (GoSec Scan) ---
-        stage('Go Security Scan (gosec)') {
+        // --- NEW STAGE: GoSec Security Scan ---
+        stage("GoSec Security Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    script {
-                        sh '''
-                        # Add Go binaries path to PATH for this script session
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-
-                        # Install gosec if not present
-                        if ! command -v gosec &> /dev/null; then
-                            echo "Installing gosec..."
-                            go install github.com/securego/gosec/v2/cmd/gosec@latest
-                        fi
-
-                        echo "Running gosec scan..."
-                        gosec -fmt=sonarqube -out gosec-report.json -no-fail ./...
-                        '''
-                    }
+                    echo "Running GoSec Security Scan..."
+                    // gosec రన్ చేసి రిపోర్ట్‌ను json ఫార్మాట్‌లో సేవ్ చేస్తుంది
+                    sh "gosec -fmt=json -out=gosec-report.json ./... || true"
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/gosec-report.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/gosec-report.json", allowEmptyArchive: true
                 }
             }
         }
 
-        // --- MASTER STAGE 5 & 6: SAST Quality Scan & Gate (SonarQube) ---
+        // --- MASTER STAGE 4: SAST (Bandit Scan) ---
+        stage("Bandit Security Scan") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install bandit
+                    bandit -r . -f json -o bandit-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/bandit-report.json", allowEmptyArchive: true
+                }
+            }
+        }
+
+        // --- MASTER STAGE 5 & 6: SAST Quality Scan (SonarQube) ---
         stage("SonarQube Analysis") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     withSonarQubeEnv('sonar-server') {
                         sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
-                            -Dsonar.projectName=productcatalogservice \
-                            -Dsonar.projectKey=productcatalogservice \
-                            -Dsonar.sources=. \
-                            -Dsonar.language=go \
-                            -Dsonar.go.gosec.reportPaths=gosec-report.json
+                          -Dsonar.projectKey=loadgenerator \
+                          -Dsonar.projectName=loadgenerator \
+                          -Dsonar.sources=. \
+                          -Dsonar.language=py
                         '''
                     }
                 }
@@ -110,48 +112,30 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 7 & 8: Go Compile & Testing Units ---
-        stage('Go Build') {
+        // --- MASTER STAGE 9: Core Module Dependencies Setup ---
+        stage("Install Dependencies") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    echo "Building Go productcatalogservice binary..."
-                    CGO_ENABLED=0 go build -o app .
-                    '''
+                    sh 'python3 -m pip install --user -r requirements.txt || true'
                 }
             }
         }
 
-        stage('Go Unit Tests') {
+        // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
+        stage("Safety Dependency Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    echo "Running unit test suites with tracking coverages..."
-                    go test -v -coverprofile=coverage.out ./...
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install safety
+                    safety check --full-report --output json > safety-report.json || true
                     '''
                 }
             }
-        }
-
-        // --- MASTER STAGE 10: SCA Dependency Check (govulncheck) ---
-        stage('Go Dependency Check (govulncheck)') {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        sh '''
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-
-                        # Install govulncheck if not present
-                        if ! command -v govulncheck &> /dev/null; then
-                            echo "Installing govulncheck..."
-                            go install golang.org/x/vuln/cmd/govulncheck@latest
-                        fi
-
-                        export PATH="$PATH:$(go env GOPATH)/bin"
-                        echo "Running govulncheck on dependencies..."
-                        govulncheck ./... || true
-                        '''
-                    }
+            post {
+                always {
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/safety-report.json", allowEmptyArchive: true
                 }
             }
         }
@@ -160,13 +144,13 @@ pipeline {
         stage('IaC Configuration Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    echo "Analyzing workspace Docker blueprints patterns safety..."
+                    echo "Validating multi-stage configuration structure layout patterns..."
                     sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/iac-report.txt"
                 }
             }
         }
@@ -175,14 +159,12 @@ pipeline {
         stage("Trivy File Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true
-                    '''
+                    sh 'trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true'
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-fs-report.txt"
                 }
             }
         }
@@ -193,9 +175,10 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                        sh """
+                        echo "Building ${env.FINAL_TAG}"
+                        docker build -t ${env.FINAL_TAG} .
+                        """
                     }
                 }
             }
@@ -207,13 +190,13 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Exporting software composition list properties (CycloneDX formatting)..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                        sh "trivy image --format cyclonedx --output sbom.json ${env.FINAL_TAG}"
                     }
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/sbom.json"
                 }
             }
         }
@@ -223,30 +206,34 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh """
-                    trivy image -f json -o trivy-image-productcatalogservice.json ${env.FINAL_TAG}
-                    trivy image -f table -o trivy-image-productcatalogservice.txt ${env.FINAL_TAG}
+                    trivy image -f json -o trivy-image-loadgenerator.json ${env.FINAL_TAG}
+                    trivy image -f table -o trivy-image-loadgenerator.txt ${env.FINAL_TAG}
                     """
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-productcatalogservice.json"
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-productcatalogservice.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-loadgenerator.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-loadgenerator.txt"
                 }
             }
         }
 
         // --- MASTER STAGE 16: Registry Image Push ---
-        stage("Tag & Push to DockerHub") {
+        stage("Push to DockerHub") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh """
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${env.FINAL_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        """
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${DOCKER_CREDS_ID}",
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push ${FINAL_TAG}
+                        '''
                     }
                 }
             }
@@ -267,18 +254,18 @@ pipeline {
         }
     }
 
-    // --- Final Check (Kept at the end) ---
+    // --- Final Notifications ---
     post {
         always {
             dir("${env.SERVICE_DIR}") {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
 
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                         body: """
-                            <p>Productcatalogservice Component Google-Shop DevSecOps pipeline status report.</p>
+                            <p>Loadgenerator Component Google-Shop DevSecOps pipeline status report.</p>
                             <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
                             <p>Project Target Context: ${env.SERVICE_DIR}</p>
                             <p>Build Number: ${env.BUILD_NUMBER}</p>
@@ -289,7 +276,8 @@ pipeline {
                         to: 'harishn662@gmail.com',
                         from: 'harishn662@gmail.com',
                         mimeType: 'text/html',
-                        attachmentsPattern: 'trivy-fs-report.txt,trivy-image-productcatalogservice.json,trivy-image-productcatalogservice.txt,gosec-report.json,sbom.json,iac-report.txt'
+                        // ఇక్కడ gosec-report.json ని కూడా యాడ్ చేశాను
+                        attachmentsPattern: 'gosec-report.json,bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-loadgenerator.json,trivy-image-loadgenerator.txt,sbom.json,iac-report.txt'
                     )
                 }
             }
