@@ -7,17 +7,11 @@ pipeline {
 
     environment {
         SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/loadgenerator'
+        DOCKER_NAME     = 'ravi6198/loadgenerator'
         IMAGE_NAME      = 'loadgenerator'
         IMAGE_TAG       = "${BUILD_NUMBER}"
-        
-        // RELATIVE PATH FIX: Specifying the microservice path context
         SERVICE_DIR     = 'src/loadgenerator'
-        
-        // Environment path configuration for localized pip tools execution
         PATH            = "$PATH:/var/lib/jenkins/.local/bin"
-        
-        // Credential IDs
         SONAR_TOKEN_ID  = 'sonar-token'
         DOCKER_CREDS_ID = 'docker-cred'
         COSIGN_KEY_ID   = 'cosign-private-key'
@@ -60,14 +54,17 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user --upgrade bandit
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install bandit
                     bandit -r . -f json -o bandit-report.json || true
                     '''
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/bandit-report.json", allowEmptyArchive: true
                 }
             }
         }
@@ -113,14 +110,16 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user safety
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install safety
                     safety check --full-report --output json > safety-report.json || true
                     '''
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/safety-report.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/safety-report.json", allowEmptyArchive: true
                 }
             }
         }
@@ -135,7 +134,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/iac-report.txt"
                 }
             }
         }
@@ -149,7 +148,7 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-fs-report.txt"
                 }
             }
         }
@@ -160,9 +159,10 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+                        sh """
+                        echo "Building ${env.FINAL_TAG}"
+                        docker build -t ${env.FINAL_TAG} .
+                        """
                     }
                 }
             }
@@ -174,13 +174,13 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Exporting software composition list properties (CycloneDX formatting)..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                        sh "trivy image --format cyclonedx --output sbom.json ${env.FINAL_TAG}"
                     }
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/sbom.json"
                 }
             }
         }
@@ -197,9 +197,8 @@ pipeline {
             }
             post {
                 always {
-                    // Fixed tracking pattern layout references for accurate attachments logic
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-loadgenerator.json"
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-loadgenerator.txt"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-loadgenerator.json"
+                    archiveArtifacts artifacts: "${env.SERVICE_DIR}/trivy-image-loadgenerator.txt"
                 }
             }
         }
@@ -208,13 +207,17 @@ pipeline {
         stage("Push to DockerHub") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh """
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${env.FINAL_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        """
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${DOCKER_CREDS_ID}",
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USER" --password-stdin
+                        docker push ${FINAL_TAG}
+                        '''
                     }
                 }
             }
@@ -241,7 +244,7 @@ pipeline {
             dir("${env.SERVICE_DIR}") {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
 
                     emailext (
                         subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
@@ -254,8 +257,8 @@ pipeline {
                             <p>Started by: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
                         attachmentsPattern: 'bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-loadgenerator.json,trivy-image-loadgenerator.txt,sbom.json,iac-report.txt'
                     )
