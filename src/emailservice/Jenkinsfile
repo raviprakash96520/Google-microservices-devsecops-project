@@ -2,12 +2,12 @@ pipeline {
     agent any
 
     tools {
-        jdk 'jdk17'
+        jdk 'jdk19'
     }
 
     environment {
         SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/emailservice'
+        DOCKER_NAME     = 'ravi6198/emailservice'
         IMAGE_NAME      = 'emailservice'
         IMAGE_TAG       = "${BUILD_NUMBER}"
         
@@ -155,18 +155,28 @@ pipeline {
         }
 
         // --- MASTER STAGE 12: Build Docker Image ---
-        stage("Build Docker Image") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
-                    }
-                }
+       stage("Build Docker Image") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            script {
+
+                env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+
+                sh """
+                docker build \
+                -t ${env.FINAL_TAG} .
+                """
+
             }
+
         }
+
+    }
+
+}
 
         // --- MASTER STAGE 14: SBOM Generation ---
         stage("Generate SBOM Manifest") {
@@ -174,7 +184,10 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Generating CycloneDX SBOM software inventory..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                        trivy image \
+                    --format cyclonedx \
+                    --output sbom.json \
+                    ${env.FINAL_TAG}
                     }
                 }
             }
@@ -253,8 +266,8 @@ pipeline {
                             <p>Started by: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
                         attachmentsPattern: 'bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-email.json,trivy-image-email.txt,sbom.json,iac-report.txt'
                     )
