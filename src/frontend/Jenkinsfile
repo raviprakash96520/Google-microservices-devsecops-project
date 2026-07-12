@@ -210,14 +210,15 @@ pipeline {
         // }
 
 
-stage("Build Docker Image") {
+sstage("Build Docker Image") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
                         sh """
+                        export DOCKER_BUILDKIT=1
                         docker build \
-                        --platform linux/amd64 \
+                        --build-arg BUILDPLATFORM=linux/amd64 \
                         -t ${env.FINAL_TAG} .
                         """
                     }
