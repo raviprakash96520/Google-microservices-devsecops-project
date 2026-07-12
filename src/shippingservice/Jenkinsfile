@@ -219,11 +219,11 @@ pipeline {
             }
         }
 
-    stage("Push Image To DockerHub") {
+   stage("Push Image To DockerHub") {
     steps {
-        dir('src/shippingservice') {
+        dir("${env.SERVICE_DIR}") {
             withCredentials([usernamePassword(
-                credentialsId: 'docker-cred',
+                credentialsId: "${DOCKER_CREDS_ID}",
                 usernameVariable: 'DOCKER_USER',
                 passwordVariable: 'DOCKER_PASS'
             )]) {
