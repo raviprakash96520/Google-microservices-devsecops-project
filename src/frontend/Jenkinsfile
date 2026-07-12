@@ -6,13 +6,11 @@ pipeline {
     }
 
     environment {
-        SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_NAME  = 'ravi6198/frontend'
-        IMAGE_NAME   = 'frontend'
-        IMAGE_TAG    = "${BUILD_NUMBER}"
-        
-        // RELATIVE PATH FIX: Specifying the microservice path as target base directory
-        SERVICE_DIR  = 'src/frontend'
+        SCANNER_HOME    = tool 'sonar-scanner'
+        DOCKER_NAME     = 'ravi6198/frontend'
+        IMAGE_NAME      = 'frontend'
+        IMAGE_TAG       = "${BUILD_NUMBER}"
+        SERVICE_DIR     = 'src/frontend'
         
         // Credential IDs
         SONAR_TOKEN_ID  = 'sonar-token'
@@ -29,32 +27,26 @@ pipeline {
 
         stage("Git Checkout") {
             steps {
-                // Pulling your main branch code structure
                 git branch: 'main', url: 'https://github.com/harishnshetty/Google-microservices-devsecops-project.git'
             }
         }
 
-        // --- MASTER STAGE 2: Secret Scan ---
         stage('Secret Scan (GitLeaks)') {
             steps {
                 echo "Checking for leaked secrets inside ${env.SERVICE_DIR} context..."
-                // Specific component framework analysis to reduce false positives
                 sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
             }
         }
 
-        // --- MASTER STAGE 3: License Scan ---
         stage('License Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     echo "Analyzing open-source dependency licenses..."
-                    // Native scanning scripts hook
                     // sh 'go-licenses check ./... || true'
                 }
             }
         }
 
-        // --- MASTER STAGE 4: SAST (gosec) ---
         stage('Go Security Scan (gosec)') {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -75,23 +67,23 @@ pipeline {
             }
             post {
                 always {
-                    // Pulling directly from microservice subfolder workspace
                     archiveArtifacts "${env.SERVICE_DIR}/gosec-report.json"
                 }
             }
         }
 
-        // ---- MASTER STAGE 5 & 6: Code Quality & Quality Gate ----
         stage("SonarQube Analysis") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     withSonarQubeEnv('sonar-server') {
-                        sh ''' $SCANNER_HOME/bin/sonar-scanner \\
-                            -Dsonar.projectName=frontend \\
-                            -Dsonar.projectKey=frontend \\
-                            -Dsonar.sources=. \\
-                            -Dsonar.language=go \\
-                            -Dsonar.go.gosec.reportPaths=gosec-report.json '''
+                        sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=frontend \
+                            -Dsonar.projectKey=frontend \
+                            -Dsonar.sources=. \
+                            -Dsonar.language=go \
+                            -Dsonar.go.gosec.reportPaths=gosec-report.json
+                        '''
                     }
                 }
             }
@@ -107,7 +99,6 @@ pipeline {
             }
         }
 
-        // ---- MASTER STAGE 9: Core Native Build ----
         stage('Go Build Execution') {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -119,7 +110,6 @@ pipeline {
             }
         }
 
-        // ---- MASTER STAGE 7 & 8: Unit Testing & Coverage ----
         stage('Go Unit Tests') {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -131,7 +121,6 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 10: SCA ---
         stage('Go Dependency Check (govulncheck)') {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -154,12 +143,10 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 11: IaC Configuration Scan ---
         stage('IaC Configuration Scan') {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     echo "Validating component Dockerfile and context definitions..."
-                    // Misconfiguration patterns checking inside microservice directory
                     sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
                 }
             }
@@ -170,17 +157,16 @@ pipeline {
             }
         }
 
-        // --- MASTER STAGE 13: Trivy File System Scan ---
         stage("Trivy Workspace File Scan") {
             steps {
                 dir("${env.SERVICE_DIR}") { 
                     script {
                         sh '''
                         echo "Executing baseline file scans..."
-                        trivy fs . \\
-                            --severity CRITICAL,HIGH \\
-                            --exit-code 1 \\
-                            --scanners vuln,misconfig,secret \\
+                        trivy fs . \
+                            --severity CRITICAL,HIGH \
+                            --exit-code 1 \
+                            --scanners vuln,misconfig,secret \
                             > trivy-fs-report.txt || true
                         '''
                     }
@@ -193,24 +179,7 @@ pipeline {
             }
         }
 
-        // ---- MASTER STAGE 12: Docker Build Environment ----
-        // stage("Build Docker Image") {
-        //     steps {
-        //         dir("${env.SERVICE_DIR}") {
-        //             script {
-        //                 env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-        //                 sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
-                        
-        //                 // Builds the Dockerfile placed inside src/frontend folder context
-        //                 sh "docker build -t $IMAGE_NAME ."
-        //                 sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
-        //             }
-        //         }
-        //     }
-        // }
-
-
-sstage("Build Docker Image") {
+        stage("Build Docker Image") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     script {
@@ -218,20 +187,20 @@ sstage("Build Docker Image") {
                         sh """
                         export DOCKER_BUILDKIT=1
                         docker build \
-                        --build-arg BUILDPLATFORM=linux/amd64 \
-                        -t ${env.FINAL_TAG} .
+                            --build-arg BUILDPLATFORM=linux/amd64 \
+                            -t ${env.FINAL_TAG} .
                         """
                     }
                 }
             }
         }
-        // --- MASTER STAGE 14: SBOM Generation ---
+
         stage("Generate SBOM Specification") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Exporting software asset layout manifest (CycloneDX format)..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                        sh "trivy image --format cyclonedx --output sbom.json ${env.FINAL_TAG}"
                     }
                 }
             }
@@ -242,7 +211,6 @@ sstage("Build Docker Image") {
             }
         }
 
-        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
         stage("Trivy Image Scan Processing") {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -263,40 +231,25 @@ sstage("Build Docker Image") {
             }
         }
 
-        // ---- MASTER STAGE 16: Push Registry System ----
-       stage("Push Image to DockerHub") {
-
-    steps {
-
-        dir("${env.SERVICE_DIR}") {
-
-            withCredentials([
-                usernamePassword(
-                    credentialsId: "${DOCKER_CREDS_ID}",
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )
-            ]) {
-
-                sh '''
-                
-                echo $DOCKER_PASSWORD | docker login \
-                -u $DOCKER_USER \
-                --password-stdin
-
-                docker push ${FINAL_TAG}
-
-                '''
-
+        stage("Push Image to DockerHub") {
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${DOCKER_CREDS_ID}",
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )
+                    ]) {
+                        sh """
+                        echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin
+                        docker push ${env.FINAL_TAG}
+                        """
+                    }
+                }
             }
-
         }
 
-    }
-
-}
-
-        // --- MASTER STAGE 15: Cryptographic Image Signing ---
         stage("Sign Built Container Artifact") {
             steps {
                 dir("${env.SERVICE_DIR}") {
@@ -316,7 +269,7 @@ sstage("Build Docker Image") {
             dir("${env.SERVICE_DIR}") {
                 script {
                     def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
+                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: 'Github User'
 
                     emailext (
                         subject: "CI Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
@@ -332,7 +285,6 @@ sstage("Build Docker Image") {
                         to: 'ravireddy6198@gmail.com',
                         from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
-                        // Fixed explicit subfolder dynamic target lookups for attachment profiles
                         attachmentsPattern: 'trivy-fs-report.txt,trivy-image-frontend.json,trivy-image-frontend.txt,gosec-report.json,sbom.json,iac-report.txt'
                     )
                 }
