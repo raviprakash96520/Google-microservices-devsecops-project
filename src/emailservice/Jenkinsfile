@@ -10,14 +10,7 @@ pipeline {
         DOCKER_NAME     = 'ravi6198/emailservice'
         IMAGE_NAME      = 'emailservice'
         IMAGE_TAG       = "${BUILD_NUMBER}"
-        
-        // RELATIVE PATH FIX: Specifying the microservice path context
         SERVICE_DIR     = 'src/emailservice'
-        
-        // Environment path configuration for localized pip tools execution
-        PATH            = "$PATH:/var/lib/jenkins/.local/bin"
-        
-        // Credential IDs
         SONAR_TOKEN_ID  = 'sonar-token'
         DOCKER_CREDS_ID = 'docker-cred'
         COSIGN_KEY_ID   = 'cosign-private-key'
@@ -25,70 +18,69 @@ pipeline {
 
     stages {
         stage("Clean Workspace") {
-            steps { 
-                cleanWs() 
+            steps {
+                cleanWs()
             }
         }
 
         stage("Git Checkout") {
             steps {
-                // Pointing directly to your updated repository framework URL
-                git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
+                git branch: 'main',
+                    url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
             }
         }
 
-        // --- MASTER STAGE 2: Secret Scan ---
-        stage('Secret Scan (GitLeaks)') {
+        stage("Secret Scan (GitLeaks)") {
             steps {
-                echo "Scanning for exposed credentials/tokens within ${env.SERVICE_DIR}..."
-                sh "gitleaks detect --source=${env.SERVICE_DIR} --verbose || true"
+                sh """
+                gitleaks detect \
+                --source=${SERVICE_DIR} \
+                --verbose || true
+                """
             }
         }
 
-        // --- MASTER STAGE 3: License Scan ---
-        stage('License Scan') {
+        stage("License Scan") {
             steps {
-                dir("${env.SERVICE_DIR}") {
-                    echo "Checking python modules source licenses compliance..."
-                    // pip3 install license-check && license-check || true
+                dir("${SERVICE_DIR}") {
+                    echo "License validation skipped"
                 }
             }
         }
 
-        // --- MASTER STAGE 4: SAST (Bandit Scan) ---
         stage("Bandit Security Scan") {
-    steps {
-        dir("${SERVICE_DIR}") {
-            sh '''
-            python3 -m venv venv
-
-            . venv/bin/activate
-
-            pip install --upgrade pip
-            pip install bandit
-
-            bandit -r . -f json -o bandit-report.json || true
-            '''
+            steps {
+                dir("${SERVICE_DIR}") {
+                    sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install bandit
+                    bandit -r . -f json -o bandit-report.json || true
+                    ls -l bandit-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/bandit-report.json",
+                        allowEmptyArchive: true
+                    )
+                }
+            }
         }
-    }
-    post {
-        always {
-            archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
-        }
-    }
-}
 
-        // --- MASTER STAGE 5 & 6: SAST Quality Scan (SonarQube) ---
         stage("SonarQube Analysis") {
             steps {
-                dir("${env.SERVICE_DIR}") {
+                dir("${SERVICE_DIR}") {
                     withSonarQubeEnv('sonar-server') {
                         sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
-                          -Dsonar.projectKey=emailservice \
-                          -Dsonar.projectName=emailservice \
-                          -Dsonar.sources=. \
-                          -Dsonar.language=py
+                        -Dsonar.projectKey=emailservice \
+                        -Dsonar.projectName=emailservice \
+                        -Dsonar.sources=. \
+                        -Dsonar.language=py
                         '''
                     }
                 }
@@ -97,233 +89,190 @@ pipeline {
 
         stage("Quality Gate") {
             steps {
-                script {
-                    timeout(time: 3, unit: 'MINUTES') {
-                        waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
-                    }
+                timeout(time: 3, unit: 'MINUTES') {
+                    waitForQualityGate(
+                        abortPipeline: true,
+                        credentialsId: "${SONAR_TOKEN_ID}"
+                    )
                 }
             }
         }
 
-        // --- MASTER STAGE 9: Core Module Dependencies Setup ---
         stage("Install Dependencies") {
-    steps {
-        dir("${SERVICE_DIR}") {
-            sh '''
-            . venv/bin/activate || true
-            pip install -r requirements.txt || true
-            '''
+            steps {
+                dir("${SERVICE_DIR}") {
+                    sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt || true
+                    '''
+                }
+            }
         }
-    }
-}
-        // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
-        
-        // --- MASTER STAGE 11: IaC Configuration Scan ---
-       // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
 
-stage("Safety Dependency Scan") {
-    steps {
-        dir("${SERVICE_DIR}") {
-            sh '''
-            python3 -m venv venv
-
-            . venv/bin/activate
-
-            pip install safety
-
-            safety check --full-report --output json > safety-report.json || true
-
-            ls -l safety-report.json || true
-            '''
+        stage("Safety Dependency Scan") {
+            steps {
+                dir("${SERVICE_DIR}") {
+                    sh '''
+                    . venv/bin/activate
+                    pip install safety
+                    safety check --full-report --output json > safety-report.json || true
+                    ls -l safety-report.json || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/safety-report.json",
+                        allowEmptyArchive: true
+                    )
+                }
+            }
         }
-    }
 
-    post {
-        always {
-            archiveArtifacts artifacts: "${env.SERVICE_DIR}/safety-report.json", allowEmpty: true
+        stage("IaC Configuration Scan") {
+            steps {
+                dir("${SERVICE_DIR}") {
+                    sh '''
+                    trivy config . --severity HIGH,CRITICAL -o iac-report.txt || true
+                    ls -l iac-report.txt || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/iac-report.txt",
+                        allowEmptyArchive: true
+                    )
+                }
+            }
         }
-    }
-}
 
-
-// --- MASTER STAGE 11: IaC Configuration Scan ---
-
-stage("IaC Configuration Scan") {
-    steps {
-        dir("${SERVICE_DIR}") {
-
-            sh '''
-            echo "Running Trivy IaC scan..."
-
-            trivy config . \
-            --severity HIGH,CRITICAL \
-            -o iac-report.txt || true
-
-            ls -l iac-report.txt || true
-            '''
-
-        }
-    }
-
-    post {
-        always {
-            archiveArtifacts artifacts: "${env.SERVICE_DIR}/iac-report.txt", allowEmpty: true
-        }
-    }
-}
-
-        // --- MASTER STAGE 13: Trivy File System Scan ---
         stage("Trivy File Scan") {
             steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh 'trivy fs . --severity CRITICAL,HIGH --exit-code 1 --scanners vuln,misconfig,secret > trivy-fs-report.txt || true'
+                dir("${SERVICE_DIR}") {
+                    sh '''
+                    trivy fs . \
+                    --severity CRITICAL,HIGH \
+                    --scanners vuln,misconfig,secret \
+                    --exit-code 1 \
+                    -o trivy-fs-report.txt || true
+                    ls -l trivy-fs-report.txt || true
+                    '''
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/trivy-fs-report.txt",
+                        allowEmptyArchive: true
+                    )
                 }
             }
         }
 
-        // --- MASTER STAGE 12: Build Docker Image ---
-       stage("Build Docker Image") {
-
-    steps {
-
-        dir("${SERVICE_DIR}") {
-
-            script {
-
-                env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-
-                sh """
-                docker build \
-                -t ${env.FINAL_TAG} .
-                """
-
-            }
-
-        }
-
-    }
-
-}
-
-        // --- MASTER STAGE 14: SBOM Generation ---
-        stage("Generate SBOM Manifest") {
+        stage("Build Docker Image") {
             steps {
-                dir("${env.SERVICE_DIR}") {
+                dir("${SERVICE_DIR}") {
                     script {
-                        echo "Generating CycloneDX SBOM software inventory..."
-                        trivy image \
-                    --format cyclonedx \
-                    --output sbom.json \
-                    ${env.FINAL_TAG}
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh """
+                        docker build -t ${env.FINAL_TAG} .
+                        docker images | grep ${IMAGE_NAME}
+                        """
                     }
                 }
             }
-            post {
-                always {
-                    archiveArtifacts "${env.SERVICE_DIR}/sbom.json"
-                }
-            }
         }
 
-        // --- MASTER STAGE 13 (Extended): Container Image Scan ---
-        stage("Trivy Scan Image") {
+        stage("Generate SBOM Manifest") {
             steps {
-                dir("${env.SERVICE_DIR}") {
+                dir("${SERVICE_DIR}") {
                     sh """
-                    trivy image -f json -o trivy-image-email.json ${env.FINAL_TAG}
-                    trivy image -f table -o trivy-image-email.txt ${env.FINAL_TAG}
+                    trivy image --format cyclonedx --output sbom.json ${FINAL_TAG}
                     """
                 }
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-email.json"
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-image-email.txt"
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/sbom.json",
+                        allowEmptyArchive: true
+                    )
                 }
             }
         }
 
-        // --- MASTER STAGE 16: Registry Image Push ---
-       stage("Push to DockerHub") {
-
-    steps {
-
-        dir("${SERVICE_DIR}") {
-
-            withCredentials([
-                usernamePassword(
-                    credentialsId: "${DOCKER_CREDS_ID}",
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )
-            ]) {
-
-                sh '''
-
-                echo $DOCKER_PASSWORD | docker login \
-                -u $DOCKER_USER \
-                --password-stdin
-
-
-                docker push \
-                ${DOCKER_NAME}:${IMAGE_TAG}
-
-
-                '''
-
+        stage("Trivy Scan Image") {
+            steps {
+                dir("${SERVICE_DIR}") {
+                    sh """
+                    trivy image -f json -o trivy-image-email.json ${FINAL_TAG}
+                    trivy image -f table -o trivy-image-email.txt ${FINAL_TAG}
+                    """
+                }
             }
-
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/trivy-image-email.json",
+                        allowEmptyArchive: true
+                    )
+                    archiveArtifacts(
+                        artifacts: "${SERVICE_DIR}/trivy-image-email.txt",
+                        allowEmptyArchive: true
+                    )
+                }
+            }
         }
 
-    }
-
-}
-
-        // --- MASTER STAGE 15: Cryptographic Image Signing ---
-        stage("Sign Container Image") {
+        stage("Push to DockerHub") {
             steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        echo "Publishing cryptographic Cosign verification stamps..."
-                        // withCredentials([string(credentialsId: "${COSIGN_KEY_ID}", variable: 'COSIGN_PASSWORD')]) {
-                        //     sh "cosign sign --key cosign.key ${env.FINAL_TAG}"
-                        // }
+                dir("${SERVICE_DIR}") {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: "${DOCKER_CREDS_ID}",
+                            usernameVariable: 'DOCKER_USER',
+                            passwordVariable: 'DOCKER_PASSWORD'
+                        )
+                    ]) {
+                        // `${FINAL_TAG}` వేరియబుల్ పని చేయాలంటే ఇక్కడ డబుల్ కోట్స్ (""") ఉండాలి
+                        sh """
+                        echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin
+                        docker push ${FINAL_TAG}
+                        """
                     }
                 }
             }
         }
+
+        stage("Sign Container Image") {
+            steps {
+                echo "Cosign signing skipped"
+            }
+        }
     }
 
-    // --- Final Notifications ---
     post {
         always {
-            dir("${env.SERVICE_DIR}") {
-                script {
-                    def buildStatus = currentBuild.currentResult
-                    def buildUser = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')[0]?.userId ?: ' Github User'
-
-                    emailext (
-                        subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        body: """
-                            <p>Emailservice Component Google-Shop DevSecOps pipeline status report.</p>
-                            <p>Youtube Link :- https://www.youtube.com/@devopsHarishNShetty </p>
-                            <p>Project Target Context: ${env.SERVICE_DIR}</p>
-                            <p>Build Number: ${env.BUILD_NUMBER}</p>
-                            <p>Build Status: ${buildStatus}</p>
-                            <p>Started by: ${buildUser}</p>
-                            <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
-                        """,
-                        to: 'ravireddy6198@gmail.com',
-                        from: 'ravireddy6198@gmail.com',
-                        mimeType: 'text/html',
-                        attachmentsPattern: 'bandit-report.json,safety-report.json,trivy-fs-report.txt,trivy-image-email.json,trivy-image-email.txt,sbom.json,iac-report.txt'
-                    )
-                }
+            script {
+                def buildStatus = currentBuild.currentResult
+                emailext(
+                    subject: "Pipeline ${buildStatus}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                    <p>Emailservice DevSecOps Pipeline Report</p>
+                    <p>Build Number: ${env.BUILD_NUMBER}</p>
+                    <p>Status: ${buildStatus}</p>
+                    <p>Image: ${DOCKER_NAME}:${IMAGE_TAG}</p>
+                    <p>Build URL: ${env.BUILD_URL}</p>
+                    """,
+                    to: "ravireddy6198@gmail.com",
+                    from: "ravireddy6198@gmail.com",
+                    mimeType: "text/html",
+                    attachmentsPattern: "**/bandit-report.json,**/safety-report.json,**/trivy-fs-report.txt,**/iac-report.txt,**/trivy-image-email.json,**/trivy-image-email.txt,**/sbom.json"
+                )
             }
             cleanWs()
         }
