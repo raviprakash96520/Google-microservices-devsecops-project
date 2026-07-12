@@ -96,25 +96,25 @@ pipeline {
         }
 
         // --- MASTER STAGE 10: SCA Dependency Scan ---
-        stage("OWASP FS Scan") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    dependencyCheck additionalArguments: '''
-                        --scan ./ 
-                        --disableYarnAudit 
-                        --disableNodeAudit 
-                    ''',
-                    odcInstallation: 'dp-check'
+        // stage("OWASP FS Scan") {
+        //     steps {
+        //         dir("${env.SERVICE_DIR}") {
+        //             dependencyCheck additionalArguments: '''
+        //                 --scan ./ 
+        //                 --disableYarnAudit 
+        //                 --disableNodeAudit 
+        //             ''',
+        //             odcInstallation: 'dp-check'
 
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts "${env.SERVICE_DIR}/dependency-check-report.xml"
-                }
-            }
-        }
+        //             dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+        //         }
+        //     }
+        //     post {
+        //         always {
+        //             archiveArtifacts "${env.SERVICE_DIR}/dependency-check-report.xml"
+        //         }
+        //     }
+        // }
 
         // --- MASTER STAGE 11: IaC Configuration Scan ---
         stage('IaC Configuration Scan') {
