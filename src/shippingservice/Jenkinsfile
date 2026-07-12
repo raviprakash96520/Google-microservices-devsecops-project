@@ -219,37 +219,27 @@ pipeline {
             }
         }
 
-      stage("Push Image To DockerHub") {
-
+    stage("Push Image To DockerHub") {
     steps {
-
-        dir("${SERVICE_DIR}") {
-
-            withCredentials([
-                string(
-                    credentialsId: 'docker-cred',
-                    variable: 'dockerpwd'
-                )
-            ]) {
+        dir('src/shippingservice') {
+            withCredentials([usernamePassword(
+                credentialsId: 'docker-cred',
+                usernameVariable: 'DOCKER_USER',
+                passwordVariable: 'DOCKER_PASS'
+            )]) {
 
                 sh '''
-                
-                docker login -u ravi6198 -p ${dockerpwd}
+                echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
 
                 docker push ${IMAGE_TAG}
 
                 docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
 
                 docker push ${DOCKER_NAME}:latest
-
                 '''
-
             }
-
         }
-
     }
-
 }
 
         stage("Cosign Image Signing") {
