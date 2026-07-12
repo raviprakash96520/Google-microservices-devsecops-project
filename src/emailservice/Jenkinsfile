@@ -57,20 +57,26 @@ pipeline {
 
         // --- MASTER STAGE 4: SAST (Bandit Scan) ---
         stage("Bandit Security Scan") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    python3 -m pip install --user --upgrade bandit
-                    bandit -r . -f json -o bandit-report.json || true
-                    '''
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
-                }
-            }
+    steps {
+        dir("${SERVICE_DIR}") {
+            sh '''
+            python3 -m venv venv
+
+            . venv/bin/activate
+
+            pip install --upgrade pip
+            pip install bandit
+
+            bandit -r . -f json -o bandit-report.json || true
+            '''
         }
+    }
+    post {
+        always {
+            archiveArtifacts "${env.SERVICE_DIR}/bandit-report.json"
+        }
+    }
+}
 
         // --- MASTER STAGE 5 & 6: SAST Quality Scan (SonarQube) ---
         stage("SonarQube Analysis") {
@@ -109,30 +115,23 @@ pipeline {
         }
 
         // --- MASTER STAGE 10: SCA Vulnerability Check (Safety) ---
-        stage("Safety Dependency Scan") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    python3 -m pip install --user safety
-                    safety check --full-report --output json > safety-report.json || true
-                    '''
-                }
-            }
-            post {
-                always {
-                    archiveArtifacts "${env.SERVICE_DIR}/safety-report.json"
-                }
-            }
-        }
-
+        
         // --- MASTER STAGE 11: IaC Configuration Scan ---
-        stage('IaC Configuration Scan') {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    echo "Validating Docker infrastructure configurations blueprint..."
-                    sh 'trivy config . --severity HIGH,CRITICAL > iac-report.txt || true'
-                }
-            }
+       stage("Safety Dependency Scan") {
+    steps {
+        dir("${SERVICE_DIR}") {
+            sh '''
+            python3 -m venv venv
+
+            . venv/bin/activate
+
+            pip install safety
+
+            safety check --full-report --output json > safety-report.json || true
+            '''
+        }
+    }
+
             post {
                 always {
                     archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
@@ -217,20 +216,40 @@ pipeline {
         }
 
         // --- MASTER STAGE 16: Registry Image Push ---
-        stage("Push to DockerHub") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh """
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${env.FINAL_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        """
-                    }
-                }
+       stage("Push to DockerHub") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: "${DOCKER_CREDS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )
+            ]) {
+
+                sh '''
+
+                echo $DOCKER_PASSWORD | docker login \
+                -u $DOCKER_USER \
+                --password-stdin
+
+
+                docker push \
+                ${DOCKER_NAME}:${IMAGE_TAG}
+
+
+                '''
+
             }
+
         }
+
+    }
+
+}
 
         // --- MASTER STAGE 15: Cryptographic Image Signing ---
         stage("Sign Container Image") {
