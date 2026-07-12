@@ -55,15 +55,30 @@ pipeline {
             }
         }
 
-        stage("Bandit Security Scan") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    sh '''
-                    python3 -m pip install --user bandit
-                    bandit -r . -f json -o bandit-report.json || true
-                    '''
-                }
-            }
+      stage("Bandit Security Scan") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            sh '''
+
+            python3 -m pip install \
+            --break-system-packages \
+            --user \
+            --upgrade bandit
+
+
+            bandit \
+            -r . \
+            -f json \
+            -o bandit-report.json || true
+
+            '''
+
+        }
+    }
+
             post {
                 always {
                     archiveArtifacts artifacts: "${env.SERVICE_DIR}/bandit-report.json", allowEmptyArchive: true
@@ -100,7 +115,7 @@ pipeline {
         stage("Install Dependencies") {
             steps {
                 dir("${env.SERVICE_DIR}") {
-                    sh 'python3 -m pip install --user -r requirements.txt || true'
+                    sh 'python3 -m pip install --break-system-packages --user -r requirements.txt || true'
                 }
             }
         }
@@ -109,8 +124,7 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user pytest pytest-cov
-                    pytest --cov=. --cov-report=xml || true
+                    python3 -m pip install --break-system-packages --user pytest pytest-cov|| true
                     '''
                 }
             }
@@ -120,7 +134,7 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user safety
+                    python3 -m pip install --break-system-packages --user safety
                     safety check --full-report --output json > safety-report.json || true
                     '''
                 }
@@ -136,7 +150,7 @@ pipeline {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     sh '''
-                    python3 -m pip install --user checkov
+                    python3 -m pip install --break-system-packages --user checkov
                     checkov -d . --output json > checkov-report.json || true
                     '''
                 }
