@@ -7,20 +7,20 @@ pipeline {
     }
     
     environment {
-        SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/paymentservice'
-        IMAGE_NAME      = 'paymentservice'
-        IMAGE_TAG       = "${BUILD_NUMBER}"
-        
-        // RELATIVE PATH FIX: Specifying the microservice path context
-        SERVICE_DIR     = 'src/paymentservice'
-        
-        // Credential IDs
-        SONAR_TOKEN_ID  = 'sonar-token'
-        DOCKER_CREDS_ID = 'docker-cred'
-        COSIGN_KEY_ID   = 'cosign-private-key'
-    }
 
+    SCANNER_HOME    = tool 'sonar-scanner'
+
+    DOCKER_NAME     = 'ravi6198/paymentservice'
+    IMAGE_NAME      = 'paymentservice'
+    IMAGE_TAG       = "${BUILD_NUMBER}"
+
+    SERVICE_DIR     = 'src/paymentservice'
+
+
+    SONAR_TOKEN_ID  = 'sonar-token'
+    DOCKER_CREDS_ID = 'docker-cred'
+    COSIGN_KEY_ID   = 'cosign-private-key'
+}
     stages {
         stage("Clean Workspace") {
             steps { 
@@ -105,7 +105,10 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/dependency-check-report.xml"
+                    archiveArtifacts(
+    artifacts: "${env.SERVICE_DIR}/dependency-check-report.xml",
+    allowEmptyArchive: true
+)
                 }
             }
         }
@@ -120,7 +123,10 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/iac-report.txt"
+                    archiveArtifacts(
+    artifacts: "${env.SERVICE_DIR}/iac-report.txt",
+    allowEmptyArchive: true
+)
                 }
             }
         }
@@ -136,24 +142,37 @@ pipeline {
             }
             post {
                 always {
-                    archiveArtifacts "${env.SERVICE_DIR}/trivy-fs-report.txt"
+                    archiveArtifacts(
+    artifacts: "${env.SERVICE_DIR}/trivy-fs-report.txt",
+    allowEmptyArchive: true
+)
                 }
             }
         }
 
         // --- MASTER STAGE 12: Build Docker Image ---
-        stage("Build Docker Image") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
-                    }
-                }
+      stage("Build Docker Image") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            script {
+
+                env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+
+                sh """
+                echo Building image ${FINAL_TAG}
+
+                docker build \
+                -t ${FINAL_TAG} .
+
+                """
+
             }
         }
+    }
+}
 
         // --- MASTER STAGE 14: SBOM Generation ---
         stage("Generate SBOM Manifest") {
@@ -161,7 +180,12 @@ pipeline {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Creating software asset matrix sheet (CycloneDX format)..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${IMAGE_NAME}"
+                       sh """
+trivy image \
+--format cyclonedx \
+--output sbom.json \
+${FINAL_TAG}
+"""
                     }
                 }
             }
@@ -192,20 +216,36 @@ pipeline {
         }
 
         // --- MASTER STAGE 16: Push Docker Image ---
-        stage("Push to DockerHub") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    withCredentials([string(credentialsId: "${DOCKER_CREDS_ID}", variable: 'dockerpwd')]) {
-                        sh """
-                        docker login -u harishnshetty -p ${dockerpwd}
-                        docker push ${env.FINAL_TAG}
-                        docker tag ${IMAGE_NAME} ${DOCKER_NAME}:latest
-                        docker push ${DOCKER_NAME}:latest
-                        """
-                    }
-                }
+      stage("Push to DockerHub") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: "${DOCKER_CREDS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )
+            ]) {
+
+
+                sh '''
+
+                echo $DOCKER_PASSWORD | docker login \
+                -u $DOCKER_USER \
+                --password-stdin
+
+
+                docker push ${FINAL_TAG}
+
+                '''
+
             }
         }
+    }
+}
 
         // --- MASTER STAGE 15: Cryptographic Image Signing ---
         stage("Sign Container Image") {
@@ -241,8 +281,8 @@ pipeline {
                             <p>Started by: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
                         attachmentsPattern: 'trivy-fs-report.txt,trivy-image-paymentservice.json,trivy-image-paymentservice.txt,dependency-check-report.xml,sbom.json,iac-report.txt'
                     )
