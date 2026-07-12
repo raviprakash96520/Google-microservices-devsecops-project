@@ -179,6 +179,19 @@ pipeline {
             }
         }
 
+        stage("Check Dockerfile") {
+    steps {
+        dir("${env.SERVICE_DIR}") {
+            sh '''
+            pwd
+            ls -la
+            echo "------ Dockerfile ------"
+            head -5 Dockerfile
+            '''
+        }
+    }
+}
+
         stage("Build Docker Image") {
             steps {
                 dir("${env.SERVICE_DIR}") {
