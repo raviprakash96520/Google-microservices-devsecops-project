@@ -194,21 +194,44 @@ pipeline {
         }
 
         // ---- MASTER STAGE 12: Docker Build Environment ----
-        stage("Build Docker Image") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    script {
-                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
-                        sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
+        // stage("Build Docker Image") {
+        //     steps {
+        //         dir("${env.SERVICE_DIR}") {
+        //             script {
+        //                 env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+        //                 sh "docker rmi -f $IMAGE_NAME ${env.FINAL_TAG} || true"
                         
-                        // Builds the Dockerfile placed inside src/frontend folder context
-                        sh "docker build -t $IMAGE_NAME ."
-                        sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
-                    }
-                }
+        //                 // Builds the Dockerfile placed inside src/frontend folder context
+        //                 sh "docker build -t $IMAGE_NAME ."
+        //                 sh "docker tag $IMAGE_NAME ${env.FINAL_TAG}"
+        //             }
+        //         }
+        //     }
+        // }
+
+
+stage("Build Docker Image") {
+
+    steps {
+
+        dir("${env.SERVICE_DIR}") {
+
+            script {
+
+                env.FINAL_TAG="${DOCKER_NAME}:${IMAGE_TAG}"
+
+                sh """
+                docker build \
+                -t ${env.FINAL_TAG} .
+                """
+
             }
+
         }
 
+    }
+
+}
         // --- MASTER STAGE 14: SBOM Generation ---
         stage("Generate SBOM Specification") {
             steps {
