@@ -33,26 +33,19 @@ pipeline {
         }
 
         stage("Install Go Tools") {
-            steps {
-                sh '''
-                export PATH=$PATH:$(go env GOPATH)/bin
-                echo "Go Version"
-                go version
+    steps {
+        sh '''
+        export GOPATH=$HOME/go
+        export PATH=$PATH:$GOPATH/bin:$(go env GOPATH)/bin
 
-                if ! command -v gosec
-                then
-                    echo "Installing gosec"
-                    go install github.com/securego/gosec/v2/cmd/gosec@latest
-                fi
-
-                if ! command -v govulncheck
-                then
-                    echo "Installing govulncheck"
-                    go install golang.org/x/vuln/cmd/govulncheck@latest
-                fi
-                '''
-            }
-        }
+        if ! command -v gosec &> /dev/null
+        then
+            echo "Installing gosec via go install"
+            go install github.com/securego/gosec/v2/cmd/gosec@latest
+        fi
+        '''
+    }
+}
 
         stage("Git Secret Scan") {
             steps {
