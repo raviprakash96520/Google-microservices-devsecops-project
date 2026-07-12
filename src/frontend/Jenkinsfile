@@ -211,28 +211,19 @@ pipeline {
 
 
 stage("Build Docker Image") {
-
-    steps {
-
-        dir("${env.SERVICE_DIR}") {
-
-            script {
-
-                env.FINAL_TAG="${DOCKER_NAME}:${IMAGE_TAG}"
-
-            sh """
-                docker build \
-                --build-arg BUILDPLATFORM=linux/amd64 \
-                -t ${env.FINAL_TAG} .
-                """
-
+            steps {
+                dir("${env.SERVICE_DIR}") {
+                    script {
+                        env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
+                        sh """
+                        docker build \
+                        --platform linux/amd64 \
+                        -t ${env.FINAL_TAG} .
+                        """
+                    }
+                }
             }
-
         }
-
-    }
-
-}
         // --- MASTER STAGE 14: SBOM Generation ---
         stage("Generate SBOM Specification") {
             steps {
