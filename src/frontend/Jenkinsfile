@@ -27,7 +27,7 @@ pipeline {
 
         stage("Git Checkout") {
             steps {
-                git branch: 'main', url: 'https://github.com/harishnshetty/Google-microservices-devsecops-project.git'
+                git branch: 'main', url: 'https://github.com/raviprakash96520/Google-microservices-devsecops-project.git'
             }
         }
 
