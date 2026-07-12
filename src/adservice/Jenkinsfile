@@ -94,7 +94,7 @@ pipeline {
         stage("Quality Gate Check") {
             steps {
                 script {
-                    timeout(time: 3, unit: 'MINUTES') {
+                    timeout(time: 7, unit: 'MINUTES') {
                         waitForQualityGate abortPipeline: true, credentialsId: "${SONAR_TOKEN_ID}"
                     }
                 }
