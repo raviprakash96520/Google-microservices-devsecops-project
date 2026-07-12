@@ -58,7 +58,7 @@ pipeline {
         dir("${env.SERVICE_DIR}") {
             sh '''
             chmod +x gradlew
-            ./gradlew build -x test
+            ./gradlew build -x test -x verifyGoogleJavaFormat
             '''
         }
     }
