@@ -8,7 +8,7 @@ pipeline {
     
     environment {
         SCANNER_HOME    = tool 'sonar-scanner'
-        DOCKER_NAME     = 'harishnshetty/currencyservice'
+        DOCKER_NAME     = 'ravi6198/currencyservice'
         IMAGE_NAME      = 'currencyservice'
         IMAGE_TAG       = "${BUILD_NUMBER}"
         
@@ -241,8 +241,8 @@ pipeline {
                             <p>Started by: ${buildUser}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
                         """,
-                        to: 'harishn662@gmail.com',
-                        from: 'harishn662@gmail.com',
+                        to: 'ravireddy6198@gmail.com',
+                        from: 'ravireddy6198@gmail.com',
                         mimeType: 'text/html',
                         attachmentsPattern: 'trivy-fs-report.txt,trivy-image-currency.json,trivy-image-currency.txt,dependency-check-report.xml,sbom.json,iac-report.txt'
                     )
