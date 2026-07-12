@@ -192,28 +192,37 @@ pipeline {
     }
 }
 
-       stage("Build Docker Image") {
+     stage("Build Docker Image") {
     steps {
         dir("${env.SERVICE_DIR}") {
-            sh '''
-            echo "Current directory:"
-            pwd
+            script {
 
-            echo "Dockerfile content:"
-            head -5 Dockerfile
+                env.FINAL_TAG = "${DOCKER_NAME}:${IMAGE_TAG}"
 
-            docker build -t ravi6198/frontend:${BUILD_NUMBER} .
-            '''
+                sh """
+                echo "Building Image ${FINAL_TAG}"
+
+                docker build \
+                -t ${FINAL_TAG} .
+                """
+
+            }
         }
     }
 }
-
         stage("Generate SBOM Specification") {
             steps {
                 dir("${env.SERVICE_DIR}") {
                     script {
                         echo "Exporting software asset layout manifest (CycloneDX format)..."
-                        sh "trivy image --format cyclonedx --output sbom.json ${env.FINAL_TAG}"
+                        sh """
+echo "Generating SBOM for ${FINAL_TAG}"
+
+trivy image \
+--format cyclonedx \
+--output sbom.json \
+${FINAL_TAG}
+"""
                     }
                 }
             }
@@ -244,24 +253,34 @@ pipeline {
             }
         }
 
-        stage("Push Image to DockerHub") {
-            steps {
-                dir("${env.SERVICE_DIR}") {
-                    withCredentials([
-                        usernamePassword(
-                            credentialsId: "${DOCKER_CREDS_ID}",
-                            usernameVariable: 'DOCKER_USER',
-                            passwordVariable: 'DOCKER_PASSWORD'
-                        )
-                    ]) {
-                        sh """
-                        echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USER --password-stdin
-                        docker push ${env.FINAL_TAG}
-                        """
-                    }
-                }
+       stage("Push Image to DockerHub") {
+
+    steps {
+
+        dir("${SERVICE_DIR}") {
+
+            withCredentials([
+                usernamePassword(
+                    credentialsId: "${DOCKER_CREDS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )
+            ]) {
+
+                sh '''
+                echo $DOCKER_PASSWORD | docker login \
+                -u $DOCKER_USER \
+                --password-stdin
+
+
+                docker push ${FINAL_TAG}
+
+                '''
+
             }
         }
+    }
+}
 
         stage("Sign Built Container Artifact") {
             steps {
