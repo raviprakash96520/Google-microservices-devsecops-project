@@ -1,0 +1,38 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: boutiue
+  region: us-east-1
+  version: "1.33"
+  tags:
+    owner: Ravi
+    bu: hns
+    environment: prod
+    project: expense-project
+
+availabilityZones:
+  - us-east-1a
+  - us-east-1b
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: worker-nodes
+    instanceType: m7i-flex.large
+    minSize: 2
+    desiredCapacity: 2
+    maxSize: 5
+    volumeSize: 20
+    privateNetworking: false
+    spot: false
+
+    iam:
+      withAddonPolicies:
+        autoScaler: true
+        albIngress: true
+        ebs: true
+
+    labels:
+      lifecycle: spot
