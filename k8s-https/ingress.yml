@@ -3,6 +3,10 @@ kind: Ingress
 metadata:
   name: myingress
   annotations:
+
+    alb.ingress.kubernetes.io/group.name: boutique-alb
+    alb.ingress.kubernetes.io/group.order: "10"
+
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/load-balancer-name: shop-ns-alb
     # Target Type and Listener Port
@@ -16,7 +20,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: shop.harishshetty.xyz
+    - host: shop.devopswithravi.online
       http:
         paths:
           - path: /
